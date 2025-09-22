@@ -628,12 +628,43 @@ async function decodeProgressiveJPEG(buf) {
 
 /* ---------- JPEG parser/decoder (baseline + progressive fallback) ---------- */
 async function parseAndDecodeBaselineJPEG(buf, skipProgressiveCheck = false){
+  // Additional file format validation
+  const u8 = new Uint8Array(buf);
+  
+  // Check for common non-JPEG formats
+  if (u8.length > 12) {
+    // Check for HEIC/HEIF signature (ftyp box)
+    const ftypStr = String.fromCharCode(u8[4], u8[5], u8[6], u8[7]);
+    if (ftypStr === 'ftyp') {
+      const brand = String.fromCharCode(u8[8], u8[9], u8[10], u8[11]);
+      if (brand === 'heic' || brand === 'heix' || brand === 'hevc' || brand === 'hevx' || brand === 'mif1') {
+        throw new Error("This appears to be a HEIC/HEIF file. Please convert to JPEG first.\n\nOn iPhone: Use 'Most Compatible' in Settings > Camera > Formats");
+      }
+    }
+    
+    // Check for PNG signature
+    if (u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4E && u8[3] === 0x47) {
+      throw new Error("This appears to be a PNG file. This tool only supports JPEG files.");
+    }
+    
+    // Check for GIF signature
+    if (u8[0] === 0x47 && u8[1] === 0x49 && u8[2] === 0x46) {
+      throw new Error("This appears to be a GIF file. This tool only supports JPEG files.");
+    }
+    
+    // Check for WebP signature
+    if (u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46 && 
+        u8[8] === 0x57 && u8[9] === 0x45 && u8[10] === 0x42 && u8[11] === 0x50) {
+      throw new Error("This appears to be a WebP file. This tool only supports JPEG files.");
+    }
+  }
+  
   const s = new ByteStream(buf);
-  if (s.u16() !== 0xFFD8) throw new Error("Not a JPEG (missing SOI)");
+  if (s.u16() !== 0xFFD8) throw new Error("Not a JPEG file (missing SOI marker 0xFFD8). File may be corrupted or in an unsupported format.");
   
   // Quick check for progressive JPEG (skip if we're already converting from progressive)
   if (!skipProgressiveCheck) {
-    const u8 = new Uint8Array(buf);
+    // Use the u8 array we already have from format validation above
     for (let i = 0; i < u8.length - 1; i++) {
       if (u8[i] === 0xFF && u8[i+1] === 0xC2) {
         // Progressive JPEG detected (SOF2 marker)
@@ -1496,10 +1527,24 @@ async function buildComposite(layers = null) {
 
 async function handleFile(file){
   setBar(0); setStatus('reading…');
-  if (!(file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name))) {
-    alert("Please choose a JPEG file (.jpg).");
+  
+  // Check file extension first
+  const fileName = file.name.toLowerCase();
+  const isHEIC = fileName.endsWith('.heic') || fileName.endsWith('.heif');
+  const isJPEG = file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name);
+  
+  if (isHEIC) {
+    alert("HEIC/HEIF format detected. This tool only supports JPEG files.\n\nOn iPhone: When sharing/saving photos, choose 'Most Compatible' format in Settings > Camera > Formats, or convert HEIC to JPEG using the Files app.");
+    setStatus('idle');
     return;
   }
+  
+  if (!isJPEG) {
+    alert("Please choose a JPEG file (.jpg). The selected file appears to be: " + (file.type || 'unknown format'));
+    setStatus('idle');
+    return;
+  }
+  
   const buf = await file.arrayBuffer();
 
   try {
@@ -1683,9 +1728,20 @@ async function handleSimpleFile(file) {
   setBar(0); 
   setStatus('reading…');
   
-  if (!(file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name))) {
-    alert("Please choose a JPEG file (.jpg).");
-setStatus('idle');
+  // Check file extension first
+  const fileName = file.name.toLowerCase();
+  const isHEIC = fileName.endsWith('.heic') || fileName.endsWith('.heif');
+  const isJPEG = file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name);
+  
+  if (isHEIC) {
+    alert("HEIC/HEIF format detected. This tool only supports JPEG files.\n\nOn iPhone: When sharing/saving photos, choose 'Most Compatible' format in Settings > Camera > Formats, or convert HEIC to JPEG using the Files app.");
+    setStatus('idle');
+    return;
+  }
+  
+  if (!isJPEG) {
+    alert("Please choose a JPEG file (.jpg). The selected file appears to be: " + (file.type || 'unknown format'));
+    setStatus('idle');
     return;
   }
   
