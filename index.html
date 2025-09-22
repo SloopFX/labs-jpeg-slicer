@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>JPEG Layers — GIF & Compare Modes</title>
+<title>Image Frequency Layers — JPEG Analysis Tool</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="data:,">
 <!-- GIF.js for animated GIF export -->
@@ -52,7 +52,7 @@
 </head>
 <body>
 <header style="display:flex;justify-content:space-between;align-items:center;">
-  <h1>JPEG Layers — <span id="uiModeLabel" role="status">Compare</span> Mode</h1>
+  <h1>Image Layers — <span id="uiModeLabel" role="status">Compare</span> Mode</h1>
   <div style="display:flex;align-items:center;gap:10px;">
     <div style="display:flex;background:#0e1520;border:1px solid #263447;border-radius:6px;overflow:hidden;" role="group" aria-label="View mode selection">
       <button id="gifModeBtn" style="padding:8px 16px;background:transparent;border:none;color:#8aa1b1;cursor:pointer;font-size:13px;transition:all 0.2s;" aria-pressed="false" aria-label="Switch to GIF animation mode">
@@ -69,9 +69,9 @@
 <section id="simpleApp" style="display:none;">
   <div class="panel">
     <div style="display:grid; grid-template-columns:auto 1fr; gap:20px;">
-      <div id="simpleDrop" class="drop" style="width:200px; cursor:pointer;" role="button" tabindex="0" aria-label="Drop zone for JPEG files">
-        <input id="simpleFile" type="file" accept=".jpg,.jpeg,image/jpeg" style="display:none;" aria-label="Browse for JPEG file" />
-        <p><strong>Drop a <span class="kbd">.jpg</span></strong><br><span class="small">JPEG image</span></p>
+      <div id="simpleDrop" class="drop" style="width:200px; cursor:pointer;" role="button" tabindex="0" aria-label="Drop zone for image files">
+        <input id="simpleFile" type="file" accept="image/*,.heic,.heif" style="display:none;" aria-label="Browse for image file" />
+        <p><strong>Drop an image</strong><br><span class="small">JPEG, PNG, HEIC, WebP, GIF</span></p>
     </div>
 
       <div style="display:flex;flex-direction:column;gap:12px;">
@@ -137,9 +137,9 @@
   <!-- File input and controls -->
   <div class="panel">
     <div style="display:grid; grid-template-columns:auto 1fr; gap:20px;">
-      <div id="drop" class="drop" style="width:200px;" role="button" tabindex="0" aria-label="Drop zone for JPEG files">
-        <input id="file" type="file" accept=".jpg,.jpeg,image/jpeg" aria-label="Browse for JPEG file" />
-        <p><strong>Drop a <span class="kbd">.jpg</span></strong><br><span class="small">baseline JPEG</span></p>
+      <div id="drop" class="drop" style="width:200px;" role="button" tabindex="0" aria-label="Drop zone for image files">
+        <input id="file" type="file" accept="image/*,.heic,.heif" aria-label="Browse for image file" />
+        <p><strong>Drop an image</strong><br><span class="small">JPEG, PNG, HEIC, WebP, GIF</span></p>
       </div>
 
       <div class="controls-row">
@@ -234,14 +234,15 @@
 
 <script>
 /* =========================================================
-   JPEG Layers — Bitstream‑True (Baseline JPEG only)
-   - Parses markers, DQT/DHT/SOF0/SOS
+   Image Frequency Layers Analyzer
+   - Auto-converts PNG, HEIC, WebP, GIF to JPEG for analysis
+   - Parses JPEG markers: DQT/DHT/SOF0/SOS
    - Huffman‑decodes to quantized DCT coefficients (Cq)
    - Reconstructs layers by enabling zig‑zag indices ≤ K
    - Supports: 8‑bit baseline, Huffman coding, 3 comps (YCbCr),
                sampling: 4:4:4, 4:2:2, 4:2:0, restart intervals
-   - Omits: progressive scans (SOF2/SOS Ah/Al != 0), arithmetic coding,
-            CMYK/YCCK/ICC, 12‑bit
+   - Progressive JPEGs converted to baseline via canvas
+   - HEIC support depends on browser (Safari/iOS best)
    
    FUTURE IMPROVEMENTS & SUGGESTIONS:
    ==================================
@@ -462,167 +463,90 @@ function extendSign(v, t){ // JPEG sign extension
   return v;
 }
 
-/* ---------- Progressive JPEG fallback using canvas ---------- */
-async function decodeProgressiveJPEG(buf) {
-  // For progressive JPEGs, convert to baseline by re-encoding
-  const blob = new Blob([buf], { type: 'image/jpeg' });
+/* ---------- Universal image converter using canvas ---------- */
+async function convertToJPEG(buf, mimeType = 'image/jpeg', originalFileName = '') {
+  // Try to convert any image format to baseline JPEG using canvas
+  const blob = new Blob([buf], { type: mimeType });
   const url = URL.createObjectURL(blob);
   
   try {
     const img = new Image();
+    
+    // For HEIC support, we need to handle potential errors
+    let loadError = null;
     img.src = url;
     
-    // Wait for image to load
+    // Wait for image to load with timeout
     await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = reject;
+      const timeout = setTimeout(() => {
+        loadError = new Error('Image load timeout');
+        reject(loadError);
+      }, 10000);
+      
+      img.onload = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      
+      img.onerror = (e) => {
+        clearTimeout(timeout);
+        loadError = new Error(`Failed to load image: ${e.message || 'Unknown error'}`);
+        reject(loadError);
+      };
+    }).catch(err => {
+      // Try alternative mime types for HEIC
+      if (mimeType === 'image/heic' || mimeType === 'image/heif') {
+        // Some browsers need different MIME type
+        throw new Error('HEIC format is not supported by your browser. Please use Safari on macOS/iOS 11+ or convert the image first.');
+      }
+      throw err;
     });
     
-    // Create canvas and draw image at full quality
+    // Successfully loaded - now convert to JPEG
     const canvas = document.createElement('canvas');
     canvas.width = img.width;
     canvas.height = img.height;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    
+    // Fill with white background for transparent images
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0);
     
-    // Try to re-encode as baseline JPEG and parse that
-    try {
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
-      const base64 = dataUrl.split(',')[1];
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      
-      // Try parsing the re-encoded baseline JPEG
-      const result = await parseAndDecodeBaselineJPEG(bytes.buffer, true);
-      if (result && !result.isProgressive) {
-        result.wasProgressive = true; // Mark that this was originally progressive
-        return result;
-      }
-    } catch (e) {
-      // If re-encoding fails, fall back to approximation
+    // Convert to JPEG with high quality
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    const base64 = dataUrl.split(',')[1];
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
     }
     
-    // Fallback: Create approximated DCT coefficients (will have artifacts)
-    const canvas2 = document.createElement('canvas');
-    canvas2.width = img.width;
-    canvas2.height = img.height;
-    const ctx2 = canvas2.getContext('2d', { willReadFrequently: true });
-    ctx2.drawImage(img, 0, 0);
-    
-    // Get pixel data
-    const imageData = ctx2.getImageData(0, 0, img.width, img.height);
-    const pixels = imageData.data;
-    
-    // Approximate the DCT coefficients
-    // For simplicity, we'll create a pseudo-coefficient structure
-    // that works with our rendering pipeline
-    const mcuW = 8, mcuH = 8;
-    const mcusX = Math.ceil(img.width / mcuW);
-    const mcusY = Math.ceil(img.height / mcuH);
-    
-    // Create coefficient arrays for Y, Cb, Cr
-    const coeffsY = [];
-    const coeffsCb = [];
-    const coeffsCr = [];
-    
-    // Process each 8x8 block
-    for (let mcuY = 0; mcuY < mcusY; mcuY++) {
-      for (let mcuX = 0; mcuX < mcusX; mcuX++) {
-        const blockY = new Float64Array(64);
-        const blockCb = new Float64Array(64);
-        const blockCr = new Float64Array(64);
-        
-        // Simple approximation: use pixel values as if they were coefficients
-        // This is not accurate DCT but allows the visualization to work
-        for (let y = 0; y < 8; y++) {
-          for (let x = 0; x < 8; x++) {
-            const px = mcuX * 8 + x;
-            const py = mcuY * 8 + y;
-            
-            if (px < img.width && py < img.height) {
-              const idx = (py * img.width + px) * 4;
-              const r = pixels[idx] || 0;
-              const g = pixels[idx + 1] || 0;
-              const b = pixels[idx + 2] || 0;
-              
-              // Convert to YCbCr
-              const Y = 0.299 * r + 0.587 * g + 0.114 * b;
-              const Cb = 128 + (-0.168736 * r - 0.331264 * g + 0.5 * b);
-              const Cr = 128 + (0.5 * r - 0.418688 * g - 0.081312 * b);
-              
-              const zigIdx = y * 8 + x;
-              blockY[zigIdx] = Y - 128; // Center around 0
-              blockCb[zigIdx] = Cb - 128;
-              blockCr[zigIdx] = Cr - 128;
-            }
-          }
-        }
-        
-        coeffsY.push(blockY);
-        coeffsCb.push(blockCb);
-        coeffsCr.push(blockCr);
-      }
+    // Parse the newly created baseline JPEG
+    const result = await parseAndDecodeBaselineJPEG(bytes.buffer, true);
+    if (result) {
+      result.wasConverted = true;
+      result.originalFormat = mimeType || 'unknown';
+      result.originalFileName = originalFileName;
     }
-    
-    // Create Cq arrays by concatenating all blocks
-    const CqY = new Float64Array(coeffsY.length * 64);
-    const CqCb = new Float64Array(coeffsCb.length * 64);
-    const CqCr = new Float64Array(coeffsCr.length * 64);
-    
-    for (let i = 0; i < coeffsY.length; i++) {
-      CqY.set(coeffsY[i], i * 64);
-    }
-    for (let i = 0; i < coeffsCb.length; i++) {
-      CqCb.set(coeffsCb[i], i * 64);
-    }
-    for (let i = 0; i < coeffsCr.length; i++) {
-      CqCr.set(coeffsCr[i], i * 64);
-    }
-    
-    // Return a structure compatible with our rendering pipeline
-    const result = {
-      width: img.width,
-      height: img.height,
-      Hmax: 1,
-      Vmax: 1,
-      comps: [
-        { 
-          id: 1, h: 1, v: 1, qId: 0, Tq: 0,
-          blocks: coeffsY,
-          Cq: CqY,
-          V: 1, H: 1,
-          blocksX: mcusX,
-          blocksY: mcusY
-        },
-        { 
-          id: 2, h: 1, v: 1, qId: 1, Tq: 1,
-          blocks: coeffsCb,
-          Cq: CqCb,
-          V: 1, H: 1,
-          blocksX: mcusX,
-          blocksY: mcusY
-        },
-        { 
-          id: 3, h: 1, v: 1, qId: 1, Tq: 1,
-          blocks: coeffsCr,
-          Cq: CqCr,
-          V: 1, H: 1,
-          blocksX: mcusX,
-          blocksY: mcusY
-        }
-      ],
-      DQT: { 0: new Float64Array(64).fill(1), 1: new Float64Array(64).fill(1) }, // Dummy quant tables
-      isProgressive: true
-    };
-    
-    // Progressive fallback is being used - frequency analysis will be approximate
-    
     return result;
   } finally {
     URL.revokeObjectURL(url);
+  }
+}
+
+/* ---------- Progressive JPEG fallback using canvas ---------- */
+async function decodeProgressiveJPEG(buf) {
+  // For progressive JPEGs, convert to baseline by re-encoding
+  try {
+    const result = await convertToJPEG(buf, 'image/jpeg');
+    if (result) {
+      result.wasProgressive = true;
+      return result;
+    }
+  } catch (e) {
+    // If conversion fails completely, throw error
+    throw new Error('Failed to convert progressive JPEG: ' + e.message);
   }
 }
 
@@ -1528,28 +1452,57 @@ async function buildComposite(layers = null) {
 async function handleFile(file){
   setBar(0); setStatus('reading…');
   
-  // Check file extension first
+  // Detect file format
   const fileName = file.name.toLowerCase();
-  const isHEIC = fileName.endsWith('.heic') || fileName.endsWith('.heif');
+  const fileExt = fileName.split('.').pop();
   const isJPEG = file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name);
   
-  if (isHEIC) {
-    alert("HEIC/HEIF format detected. This tool only supports JPEG files.\n\nOn iPhone: When sharing/saving photos, choose 'Most Compatible' format in Settings > Camera > Formats, or convert HEIC to JPEG using the Files app.");
-    setStatus('idle');
-    return;
-  }
-  
-  if (!isJPEG) {
-    alert("Please choose a JPEG file (.jpg). The selected file appears to be: " + (file.type || 'unknown format'));
-    setStatus('idle');
-    return;
-  }
+  // Map extensions to MIME types
+  const mimeMap = {
+    'heic': 'image/heic',
+    'heif': 'image/heif', 
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'bmp': 'image/bmp',
+    'svg': 'image/svg+xml'
+  };
   
   const buf = await file.arrayBuffer();
 
   try {
-    setStatus('parsing JPEG…');
-    gMeta = await parseAndDecodeBaselineJPEG(buf);
+    let convertedFormat = null;
+    
+    // If it's a JPEG, parse directly
+    if (isJPEG) {
+      setStatus('parsing JPEG…');
+      gMeta = await parseAndDecodeBaselineJPEG(buf);
+    } else {
+      // Try to convert non-JPEG format
+      const mimeType = mimeMap[fileExt] || file.type || 'application/octet-stream';
+      setStatus(`Converting ${fileExt.toUpperCase() || 'image'} to JPEG…`);
+      
+      try {
+        gMeta = await convertToJPEG(buf, mimeType, file.name);
+        convertedFormat = fileExt.toUpperCase() || 'image';
+        
+        // Show conversion success message
+        setStatus(`✓ Converted from ${convertedFormat} to JPEG`);
+        setTimeout(() => setStatus('Ready'), 2000);
+      } catch (conversionError) {
+        // If conversion fails, try parsing as JPEG anyway (might be misidentified)
+        try {
+          gMeta = await parseAndDecodeBaselineJPEG(buf);
+        } catch (parseError) {
+          // Both conversion and parsing failed
+          const errorMsg = conversionError.message.includes('not supported') 
+            ? conversionError.message
+            : `Failed to convert ${convertedFormat || 'file'}. ${conversionError.message}\n\nTry converting to JPEG using an online converter or image editor.`;
+          throw new Error(errorMsg);
+        }
+      }
+    }
+    
     gLayerCache = {};
     gSelectedLayers.clear();
     
@@ -1728,28 +1681,55 @@ async function handleSimpleFile(file) {
   setBar(0); 
   setStatus('reading…');
   
-  // Check file extension first
+  // Detect file format
   const fileName = file.name.toLowerCase();
-  const isHEIC = fileName.endsWith('.heic') || fileName.endsWith('.heif');
+  const fileExt = fileName.split('.').pop();
   const isJPEG = file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name);
   
-  if (isHEIC) {
-    alert("HEIC/HEIF format detected. This tool only supports JPEG files.\n\nOn iPhone: When sharing/saving photos, choose 'Most Compatible' format in Settings > Camera > Formats, or convert HEIC to JPEG using the Files app.");
-    setStatus('idle');
-    return;
-  }
-  
-  if (!isJPEG) {
-    alert("Please choose a JPEG file (.jpg). The selected file appears to be: " + (file.type || 'unknown format'));
-    setStatus('idle');
-    return;
-  }
+  // Map extensions to MIME types
+  const mimeMap = {
+    'heic': 'image/heic',
+    'heif': 'image/heif', 
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'bmp': 'image/bmp',
+    'svg': 'image/svg+xml'
+  };
   
   try {
     const ab = await file.arrayBuffer();
+    let convertedFormat = null;
     
-    setStatus('parsing JPEG…');
-    gMeta = await parseAndDecodeBaselineJPEG(ab);
+    // If it's a JPEG, parse directly
+    if (isJPEG) {
+      setStatus('parsing JPEG…');
+      gMeta = await parseAndDecodeBaselineJPEG(ab);
+    } else {
+      // Try to convert non-JPEG format
+      const mimeType = mimeMap[fileExt] || file.type || 'application/octet-stream';
+      setStatus(`Converting ${fileExt.toUpperCase() || 'image'} to JPEG…`);
+      
+      try {
+        gMeta = await convertToJPEG(ab, mimeType, file.name);
+        convertedFormat = fileExt.toUpperCase() || 'image';
+        
+        // Show conversion success message
+        setStatus(`✓ Converted from ${convertedFormat} to JPEG`);
+        setTimeout(() => setStatus('Ready'), 2000);
+      } catch (conversionError) {
+        // If conversion fails, try parsing as JPEG anyway (might be misidentified)
+        try {
+          gMeta = await parseAndDecodeBaselineJPEG(ab);
+        } catch (parseError) {
+          // Both conversion and parsing failed
+          const errorMsg = conversionError.message.includes('not supported') 
+            ? conversionError.message
+            : `Failed to convert ${convertedFormat || 'file'}. ${conversionError.message}\n\nTry converting to JPEG using an online converter or image editor.`;
+          throw new Error(errorMsg);
+        }
+      }
+    }
     gLayerCache = {};
     
     // Show message if progressive JPEG
