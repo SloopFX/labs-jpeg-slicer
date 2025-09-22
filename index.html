@@ -5,7 +5,8 @@
 <meta charset="utf-8" />
 <title>Image Frequency Layers — JPEG Analysis Tool</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/x-icon" href="favicon.ico">
+<link rel="icon" type="image/png" href="favicon.png">
 <!-- GIF.js for animated GIF export -->
 <script src="https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js"></script>
@@ -72,6 +73,9 @@
       <div id="simpleDrop" class="drop" style="width:200px; cursor:pointer;" role="button" tabindex="0" aria-label="Drop zone for image files">
         <input id="simpleFile" type="file" accept="image/*,.heic,.heif" style="display:none;" aria-label="Browse for image file" />
         <p><strong>Drop an image</strong><br><span class="small">JPEG, PNG, HEIC, WebP, GIF</span></p>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #263447;">
+          <button id="simpleUrlBtn" class="btn" style="font-size:11px;padding:4px 8px;width:100%;">📎 Load from URL</button>
+        </div>
     </div>
 
       <div style="display:flex;flex-direction:column;gap:12px;">
@@ -140,6 +144,9 @@
       <div id="drop" class="drop" style="width:200px;" role="button" tabindex="0" aria-label="Drop zone for image files">
         <input id="file" type="file" accept="image/*,.heic,.heif" aria-label="Browse for image file" />
         <p><strong>Drop an image</strong><br><span class="small">JPEG, PNG, HEIC, WebP, GIF</span></p>
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #263447;">
+          <button id="urlBtn" class="btn" style="font-size:11px;padding:4px 8px;width:100%;">📎 Load from URL</button>
+        </div>
       </div>
 
       <div class="controls-row">
@@ -463,8 +470,90 @@ function extendSign(v, t){ // JPEG sign extension
   return v;
 }
 
+/* ---------- IndexedDB Storage for converted images ---------- */
+const DB_NAME = 'JPEGLayersDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'convertedImages';
+
+async function openDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+  });
+}
+
+async function storeConvertedImage(jpegBuffer, originalName) {
+  const db = await openDB();
+  const transaction = db.transaction([STORE_NAME], 'readwrite');
+  const store = transaction.objectStore(STORE_NAME);
+  
+  const id = 'lastConverted';
+  const data = {
+    id,
+    buffer: jpegBuffer,
+    originalName,
+    timestamp: Date.now()
+  };
+  
+  return new Promise((resolve, reject) => {
+    const request = store.put(data);
+    request.onsuccess = () => resolve(id);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getStoredImage(id = 'lastConverted') {
+  const db = await openDB();
+  const transaction = db.transaction([STORE_NAME], 'readonly');
+  const store = transaction.objectStore(STORE_NAME);
+  
+  return new Promise((resolve, reject) => {
+    const request = store.get(id);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/* ---------- URL Image Loading ---------- */
+async function loadImageFromURL(url) {
+  try {
+    // Use CORS proxy if needed
+    const corsProxy = 'https://corsproxy.io/?';
+    let fetchUrl = url;
+    
+    // Check if URL needs CORS proxy
+    if (!url.startsWith(window.location.origin) && !url.startsWith('data:')) {
+      fetchUrl = corsProxy + encodeURIComponent(url);
+    }
+    
+    setStatus('Fetching image from URL...');
+    const response = await fetch(fetchUrl);
+    if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+    
+    const blob = await response.blob();
+    const arrayBuffer = await blob.arrayBuffer();
+    
+    // Create a File object from the blob
+    const fileName = url.split('/').pop() || 'image.jpg';
+    const file = new File([blob], fileName, { type: blob.type || 'image/jpeg' });
+    
+    return file;
+  } catch (error) {
+    throw new Error(`Failed to load image from URL: ${error.message}`);
+  }
+}
+
 /* ---------- Universal image converter using canvas ---------- */
-async function convertToJPEG(buf, mimeType = 'image/jpeg', originalFileName = '') {
+async function convertToJPEG(buf, mimeType = 'image/jpeg', originalFileName = '', useIndexedDB = false) {
   // Try to convert any image format to baseline JPEG using canvas
   const blob = new Blob([buf], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -514,16 +603,36 @@ async function convertToJPEG(buf, mimeType = 'image/jpeg', originalFileName = ''
     ctx.drawImage(img, 0, 0);
     
     // Convert to JPEG with high quality
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
-    const base64 = dataUrl.split(',')[1];
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+      const base64 = dataUrl.split(',')[1];
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      
+    // For iOS: Store in IndexedDB and reload to work around issues
+    if (useIndexedDB) {
+      await storeConvertedImage(bytes.buffer, originalFileName);
+      setStatus('Reloading converted image...');
+      await new Promise(resolve => setTimeout(resolve, 100)); // Small delay for iOS
+      const stored = await getStoredImage();
+      if (stored && stored.buffer) {
+        const result = await parseAndDecodeBaselineJPEG(stored.buffer, false);
+        if (result) {
+          result.wasConverted = true;
+          result.originalFormat = mimeType || 'unknown';
+          result.originalFileName = originalFileName;
+          result.viaIndexedDB = true;
+        }
+        return result;
+      }
     }
     
     // Parse the newly created baseline JPEG
-    const result = await parseAndDecodeBaselineJPEG(bytes.buffer, true);
+    // Do NOT skip progressive check here; if canvas encoder produced progressive,
+    // we want to route through the progressive fallback which calls this again
+    const result = await parseAndDecodeBaselineJPEG(bytes.buffer, false);
     if (result) {
       result.wasConverted = true;
       result.originalFormat = mimeType || 'unknown';
@@ -969,7 +1078,12 @@ const drop = document.getElementById('drop');
 const fileInput = document.getElementById('file');
 let gCompareViewer = null; // Image compare viewer instance
 
-drop.addEventListener('click', ()=> fileInput.click());
+drop.addEventListener('click', (e) => {
+  // Don't trigger file input if clicking on buttons
+  if (e.target.tagName !== 'BUTTON' && !e.target.closest('button')) {
+    fileInput.click();
+  }
+});
 // Add keyboard support for Enter/Space
 drop.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') {
@@ -1475,15 +1589,17 @@ async function handleFile(file){
     
     // If it's a JPEG, parse directly
     if (isJPEG) {
-      setStatus('parsing JPEG…');
-      gMeta = await parseAndDecodeBaselineJPEG(buf);
+    setStatus('parsing JPEG…');
+    gMeta = await parseAndDecodeBaselineJPEG(buf);
     } else {
       // Try to convert non-JPEG format
       const mimeType = mimeMap[fileExt] || file.type || 'application/octet-stream';
       setStatus(`Converting ${fileExt.toUpperCase() || 'image'} to JPEG…`);
       
       try {
-        gMeta = await convertToJPEG(buf, mimeType, file.name);
+        // Detect iOS for special handling
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        gMeta = await convertToJPEG(buf, mimeType, file.name, isIOS);
         convertedFormat = fileExt.toUpperCase() || 'image';
         
         // Show conversion success message
@@ -1703,15 +1819,17 @@ async function handleSimpleFile(file) {
     
     // If it's a JPEG, parse directly
     if (isJPEG) {
-      setStatus('parsing JPEG…');
-      gMeta = await parseAndDecodeBaselineJPEG(ab);
+    setStatus('parsing JPEG…');
+    gMeta = await parseAndDecodeBaselineJPEG(ab);
     } else {
       // Try to convert non-JPEG format
       const mimeType = mimeMap[fileExt] || file.type || 'application/octet-stream';
       setStatus(`Converting ${fileExt.toUpperCase() || 'image'} to JPEG…`);
       
       try {
-        gMeta = await convertToJPEG(ab, mimeType, file.name);
+        // Detect iOS for special handling
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        gMeta = await convertToJPEG(ab, mimeType, file.name, isIOS);
         convertedFormat = fileExt.toUpperCase() || 'image';
         
         // Show conversion success message
@@ -2129,7 +2247,8 @@ document.getElementById('simpleFile').addEventListener('change', e => {
 
 // Make drop zone clickable
 document.getElementById('simpleDrop').addEventListener('click', e => {
-  if (e.target.tagName !== 'INPUT') {
+  // Don't trigger file input if clicking on buttons or inputs
+  if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON' && !e.target.closest('button')) {
     document.getElementById('simpleFile').click();
   }
 });
@@ -2190,6 +2309,76 @@ document.getElementById('flipSpeed').addEventListener('input', e => {
   if (isAnimating) {
     stopFlipbook();
     startFlipbook();
+  }
+});
+
+// URL loading handlers
+document.getElementById('urlBtn').addEventListener('click', async () => {
+  const url = prompt('Enter image URL:\n\nSupported formats: JPEG, PNG, GIF, WebP, BMP\n\n(CORS proxy will be used for external images)');
+  if (!url) return;
+  
+  try {
+    setStatus('Loading from URL...');
+    const file = await loadImageFromURL(url);
+    await handleFile(file);
+  } catch (error) {
+    alert('Failed to load image: ' + error.message);
+    setStatus('Error loading URL');
+  }
+});
+
+document.getElementById('simpleUrlBtn').addEventListener('click', async () => {
+  const url = prompt('Enter image URL:\n\nSupported formats: JPEG, PNG, GIF, WebP, BMP\n\n(CORS proxy will be used for external images)');
+  if (!url) return;
+  
+  try {
+    setStatus('Loading from URL...');
+    const file = await loadImageFromURL(url);
+    await handleSimpleFile(file);
+  } catch (error) {
+    alert('Failed to load image: ' + error.message);
+    setStatus('Error loading URL');
+  }
+});
+
+// Paste handler for URLs and images
+document.addEventListener('paste', async (e) => {
+  e.preventDefault();
+  
+  // Check for image files
+  const items = Array.from(e.clipboardData.items);
+  const imageItem = items.find(item => item.type.startsWith('image/'));
+  
+  if (imageItem) {
+    const file = imageItem.getAsFile();
+    if (file) {
+      // Determine which mode we're in and handle accordingly
+      if (advancedApp.style.display === 'none') {
+        await handleSimpleFile(file);
+      } else {
+        await handleFile(file);
+      }
+      return;
+    }
+  }
+  
+  // Check for text (might be URL)
+  const text = e.clipboardData.getData('text');
+  if (text && (text.startsWith('http://') || text.startsWith('https://') || text.startsWith('data:'))) {
+    try {
+      setStatus('Loading pasted URL...');
+      const file = await loadImageFromURL(text);
+      
+      // Determine which mode we're in
+      if (advancedApp.style.display === 'none') {
+        await handleSimpleFile(file);
+      } else {
+        await handleFile(file);
+      }
+    } catch (error) {
+      // Not a valid image URL, ignore
+      console.log('Pasted text was not a valid image URL:', error);
+    }
   }
 });
 
