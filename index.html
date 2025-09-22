@@ -427,7 +427,9 @@ class BitReader {
     this.restartCb = restartCb || (()=>{});
   }
   _getByte(){
-    if (this.pos >= this.bytes.length) return 0xFF; // defensive
+    if (this.pos >= this.bytes.length) {
+      throw new Error("__END_OF_SCAN__"); // Stop decoding this scan cleanly
+    }
     let b = this.bytes[this.pos++];
     if (b !== 0xFF) return b;
     // Byte-stuffing / markers
@@ -438,9 +440,9 @@ class BitReader {
       this.restartCb();
       return this._getByte();
     }
-    // Any other marker: back up two bytes and let caller handle (should not occur in baseline single-scan decoding by MCU count)
+    // Any other marker: we've reached the end of this scan's ECS
     this.pos -= 2;
-    return 0xFF; // sentinel (won't be shifted in practice since we read exact MCU count)
+    throw new Error("__END_OF_SCAN__"); // Signal end of scan instead of corrupting data
   }
   getBits(n){
     while(this.bitCnt < n){
@@ -540,15 +542,94 @@ async function loadImageFromURL(url) {
     if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
     
     const blob = await response.blob();
-    const arrayBuffer = await blob.arrayBuffer();
     
-    // Create a File object from the blob
+    // ALWAYS convert through canvas for non-JPEG URLs to ensure compatibility
+    const mimeType = blob.type || 'image/jpeg';
+    const isJPEG = mimeType === 'image/jpeg' || mimeType === 'image/jpg';
+    
+    if (!isJPEG) {
+      // Force conversion through canvas and IndexedDB
+      setStatus('Converting to JPEG via canvas...');
+      const arrayBuffer = await blob.arrayBuffer();
+      const convertedBuffer = await convertImageViaCanvas(arrayBuffer, mimeType, url.split('/').pop() || 'image');
+      
+      // Create a JPEG file from the converted buffer
+      const jpegBlob = new Blob([convertedBuffer], { type: 'image/jpeg' });
+      const fileName = (url.split('/').pop() || 'image').replace(/\.[^.]+$/, '') + '.jpg';
+      const file = new File([jpegBlob], fileName, { type: 'image/jpeg' });
+      return file;
+    }
+    
+    // For JPEGs, return as-is
     const fileName = url.split('/').pop() || 'image.jpg';
-    const file = new File([blob], fileName, { type: blob.type || 'image/jpeg' });
+    const file = new File([blob], fileName, { type: blob.type });
     
     return file;
   } catch (error) {
     throw new Error(`Failed to load image from URL: ${error.message}`);
+  }
+}
+
+/* ---------- Canvas-only converter (always uses IndexedDB) ---------- */
+async function convertImageViaCanvas(arrayBuffer, mimeType, fileName) {
+  const blob = new Blob([arrayBuffer], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  
+  try {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    
+    // Load the image
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Image load timeout')), 10000);
+      
+      img.onload = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      
+      img.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error('Failed to load image'));
+      };
+      
+      img.src = url;
+    });
+    
+    // Convert to JPEG using canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    
+    // White background for transparent images
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    
+    // Get JPEG data
+    const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    const base64 = jpegDataUrl.split(',')[1];
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    // Store in IndexedDB and retrieve (iOS workaround)
+    await storeConvertedImage(bytes.buffer, fileName);
+    setStatus('Reloading from IndexedDB...');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const stored = await getStoredImage();
+    if (stored && stored.buffer) {
+      return stored.buffer;
+    }
+    
+    // Fallback if IndexedDB fails
+    return bytes.buffer;
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }
 
@@ -618,7 +699,8 @@ async function convertToJPEG(buf, mimeType = 'image/jpeg', originalFileName = ''
       await new Promise(resolve => setTimeout(resolve, 100)); // Small delay for iOS
       const stored = await getStoredImage();
       if (stored && stored.buffer) {
-        const result = await parseAndDecodeBaselineJPEG(stored.buffer, false);
+        // Skip progressive check to avoid loops - we've already converted once
+        const result = await parseAndDecodeBaselineJPEG(stored.buffer, true);
         if (result) {
           result.wasConverted = true;
           result.originalFormat = mimeType || 'unknown';
@@ -630,9 +712,8 @@ async function convertToJPEG(buf, mimeType = 'image/jpeg', originalFileName = ''
     }
     
     // Parse the newly created baseline JPEG
-    // Do NOT skip progressive check here; if canvas encoder produced progressive,
-    // we want to route through the progressive fallback which calls this again
-    const result = await parseAndDecodeBaselineJPEG(bytes.buffer, false);
+    // Skip progressive check when coming from convertToJPEG to avoid loops
+    const result = await parseAndDecodeBaselineJPEG(bytes.buffer, true);
     if (result) {
       result.wasConverted = true;
       result.originalFormat = mimeType || 'unknown';
@@ -644,11 +725,42 @@ async function convertToJPEG(buf, mimeType = 'image/jpeg', originalFileName = ''
   }
 }
 
+/* ---------- ECS (Entropy Coded Segment) boundary detection ---------- */
+function sliceEntropySegment(u8, start) {
+  // Returns {start, end} byte offsets for the ECS starting at `start`
+  let i = start, n = u8.length;
+  while (i < n - 1) {
+    if (u8[i] !== 0xFF) { i++; continue; }
+
+    // Skip fill bytes 0xFF,0xFF,...
+    let j = i + 1;
+    while (j < n && u8[j] === 0xFF) j++;
+
+    if (j >= n) return { start, end: n };
+
+    const marker = u8[j];
+
+    if (marker === 0x00) {         // stuffed 0xFF -> data
+      i = j + 1;                   // skip the 0x00 and continue searching
+      continue;
+    }
+    if (marker >= 0xD0 && marker <= 0xD7) { // RSTn – inside ECS
+      i = j + 1;
+      continue;
+    }
+
+    // Any other 0xFF,xx marks the **end** of this ECS.
+    return { start, end: i };
+  }
+  return { start, end: n };
+}
+
 /* ---------- Progressive JPEG fallback using canvas ---------- */
 async function decodeProgressiveJPEG(buf) {
   // For progressive JPEGs, convert to baseline by re-encoding
   try {
-    const result = await convertToJPEG(buf, 'image/jpeg');
+    // Use skipProgressiveCheck to avoid infinite loops
+    const result = await convertToJPEG(buf, 'image/jpeg', 'progressive.jpg', false);
     if (result) {
       result.wasProgressive = true;
       return result;
@@ -709,10 +821,10 @@ async function parseAndDecodeBaselineJPEG(buf, skipProgressiveCheck = false){
   const DQT = {}; // quant tables by id => Float64[64] (natural order)
   const DHT_DC = {}, DHT_AC = {};
   let SOF0 = null, DRI = 0;
-  let scan = null;
   const APP = []; // ignored (for brevity)
+  const scans = []; // Store all scans for multi-scan baseline support
 
-  // --- pass 1: parse markers until SOS ---
+  // --- First pass: parse all segments and collect scan info ---
   while(!s.eof()){
     let marker = s.u16();
     if ((marker & 0xFF00) !== 0xFF00) throw new Error("Bad marker alignment");
@@ -732,8 +844,14 @@ async function parseAndDecodeBaselineJPEG(buf, skipProgressiveCheck = false){
         // Progressive JPEG detected in SOS - use canvas-based fallback
         return await decodeProgressiveJPEG(buf);
       }
-      scan = { comps, startPos: s.pos, endPos:null };
-      break; // entropy comes next
+      
+      // Bound this scan's entropy segment
+      const { start: ecsStart, end: ecsEnd } = sliceEntropySegment(u8, s.pos);
+      scans.push({ comps, ecsStart, ecsEnd });
+      
+      // Skip to next marker
+      s.seek(ecsEnd);
+      continue; // Process next markers (might be more SOS segments)
     }
     if (marker === 0xFFD0 || marker === 0xFFD7){ /* RSTn outside SOS */ continue; }
     const L = s.u16();
@@ -777,6 +895,11 @@ async function parseAndDecodeBaselineJPEG(buf, skipProgressiveCheck = false){
         }
       } break;
       case 0xFFDD: DRI = s.u16(); s.skip(L-2-2); break; // restart interval (MCUs)
+      case 0xFFDC: { // DNL (Define Number of Lines)
+        const NL = s.u16();
+        if (SOF0) SOF0.Y = NL; // Update height if SOF0 already parsed
+        s.skip(L-2-2);
+      } break;
       case 0xFFC0: { // SOF0 baseline
         const P = s.u8at(); if (P!==8) throw new Error("Only 8-bit baseline supported");
         const Y = s.u16(), X = s.u16();
@@ -798,7 +921,16 @@ async function parseAndDecodeBaselineJPEG(buf, skipProgressiveCheck = false){
     if (s.pos !== start + (L-2)) s.seek(start + (L-2));
   }
   if (!SOF0) throw new Error("Missing SOF0 (baseline frame)");
-  if (!scan) throw new Error("Missing SOS (scan)");
+  if (scans.length === 0) throw new Error("Missing SOS (scan)");
+  
+  // Debug logging for iOS multi-scan detection
+  if (scans.length > 1) {
+    console.log(`Multi-scan baseline JPEG detected: ${scans.length} scans, DRI=${DRI}`);
+    scans.forEach((scan, i) => {
+      const isInterleaved = scan.comps.length > 1;
+      console.log(`  Scan ${i+1}: ${isInterleaved ? 'interleaved' : 'non-interleaved'}, ${scan.comps.length} component(s)`);
+    });
+  }
 
   // --- Prepare decode geometry ---
   const { X:width, Y:height, comps, Hmax, Vmax } = SOF0;
@@ -820,24 +952,15 @@ async function parseAndDecodeBaselineJPEG(buf, skipProgressiveCheck = false){
     };
   });
 
-  // --- Entropy stream: decode MCUs baseline interleaved ---
-  // Build per-scan huffman table selection
-  const scanComps = scan.comps.map(sc => {
-    const ci = idToIdx.get(sc.id);
-    return { compIdx: ci, dc: DHT_DC[sc.td], ac: DHT_AC[sc.ta], H: comps[ci].H, V: comps[ci].V };
-  });
-
-  // Prepare bit reader over ECS: from current s.pos to next marker (or end); we decode exact MCU count, so we can read to end safely.
-  const ecs = new Uint8Array(s.u8.buffer, s.pos); // from pos to end
-  let mcuCountSinceRST = 0;
+  // --- Process all scans (multi-scan baseline support) ---
   const dcPred = new Int32Array(Nc).fill(0);
-  const br = new BitReader(ecs, () => { dcPred.fill(0); mcuCountSinceRST = 0; });
-
-  function decodeBlock(htDC, htAC, outCq, blockOffset){
+  
+  // Define decode function once, outside the loop
+  function decodeBlock(br, htDC, htAC, outCq, blockOffset, dcPredValue){
     // DC
     const t = br.huffDecode(htDC);
     const diff = t ? extendSign(br.getBits(t), t) : 0;
-    const dc = diff; // add to predictor outside so we can reset per component
+    const dc = diff + dcPredValue;
     // write DC at [0,0]
     outCq[blockOffset + 0] = dc;
     // AC
@@ -858,35 +981,103 @@ async function parseAndDecodeBaselineJPEG(buf, skipProgressiveCheck = false){
       const v = extendSign(br.getBits(sz), sz);
       const pos = ZIGZAG[k]; outCq[blockOffset + (pos[0]*8 + pos[1])] = v; k++;
     }
+    return dc; // Return the DC value for predictor update
   }
+  
+  // Decode each scan separately
+  for (const scan of scans) {
+    // Reset DC predictors at start of each scan (JPEG spec requirement)
+    dcPred.fill(0);
+    let mcuCountSinceRST = 0;
+    
+    // Build per-scan huffman table selection
+    const scanComps = scan.comps.map(sc => {
+      const ci = idToIdx.get(sc.id);
+      if (ci === undefined) throw new Error(`Component ${sc.id} not found in SOF0`);
+      
+      // Check that Huffman tables exist
+      if (!DHT_DC[sc.td]) throw new Error(`Missing DC Huffman table ${sc.td}`);
+      if (!DHT_AC[sc.ta]) throw new Error(`Missing AC Huffman table ${sc.ta}`);
+      
+      return { compIdx: ci, dc: DHT_DC[sc.td], ac: DHT_AC[sc.ta], H: comps[ci].H, V: comps[ci].V };
+    });
+    
+    // Get the properly bounded ECS for this scan
+    const ecs = new Uint8Array(u8.buffer, scan.ecsStart, scan.ecsEnd - scan.ecsStart);
+    const br = new BitReader(ecs, () => { dcPred.fill(0); mcuCountSinceRST = 0; });
 
-  // Walk MCUs
-  for (let my=0; my<mcusY; my++){
-    for (let mx=0; mx<mcusX; mx++){
-      // Each scan component in order
-      for (const sc of scanComps){
-        const ci = sc.compIdx;
-        const comp = compInfo[ci];
-        for (let vy=0; vy<comp.V; vy++){
-          for (let vx=0; vx<comp.H; vx++){
-            const blockX = mx*comp.H + vx;
-            const blockY = my*comp.V + vy;
-            const blockOffset = (blockY*comp.blocksX + blockX)*64;
-            // Decode block to temp, then add DC predictor
-            decodeBlock(sc.dc, sc.ac, comp.Cq, blockOffset);
-            comp.Cq[blockOffset + 0] = (comp.Cq[blockOffset + 0] + dcPred[ci]) | 0;
-            dcPred[ci] = comp.Cq[blockOffset + 0];
+    // Branch based on interleaved vs non-interleaved scan
+    if (scanComps.length === 1) {
+      // Non-interleaved (single-component) scan - common in iOS
+      const sc = scanComps[0];
+      const ci = sc.compIdx;
+      const comp = compInfo[ci];
+      
+      // One MCU == one DU (8x8) in raster order
+      let mcuCountSinceRST = 0;
+      try {
+        for (let by = 0; by < comp.blocksY; by++) {
+          for (let bx = 0; bx < comp.blocksX; bx++) {
+            const blockOffset = (by * comp.blocksX + bx) * 64;
+            const dc = decodeBlock(br, sc.dc, sc.ac, comp.Cq, blockOffset, dcPred[ci]);
+            dcPred[ci] = dc;
+            
+            // Restart interval handling
+            mcuCountSinceRST++;
+            if (DRI && (mcuCountSinceRST % DRI) === 0) {
+              // BitReader will consume RSTn and call restartCb(), which zeros predictors
+              // Nothing else to do here
+            }
+          }
+          if ((by % 8) === 0) { 
+            setStatus(`Decoding scan ${scans.indexOf(scan)+1}/${scans.length} (component ${ci})… ${Math.round((by+1)/comp.blocksY*100)}%`); 
+            setBar(((scans.indexOf(scan) + (by+1)/comp.blocksY) / scans.length) * 0.6);
+            await microYield(); 
           }
         }
+      } catch (e) {
+        if (e.message !== "__END_OF_SCAN__") throw e;
+        // Scan ended as expected, continue to next scan
       }
-      mcuCountSinceRST++;
-      if (DRI && (mcuCountSinceRST % DRI) === 0){
-        // BitReader restart callback will zero predictors when it encounters RSTn.
-        // Nothing else to do here.
+    } else {
+      // Interleaved scan (multiple components per MCU)
+      let mcuCountSinceRST = 0;
+      try {
+        for (let my=0; my<mcusY; my++){
+          for (let mx=0; mx<mcusX; mx++){
+            // Each scan component in order
+            for (const sc of scanComps){
+              const ci = sc.compIdx;
+              const comp = compInfo[ci];
+              for (let vy=0; vy<comp.V; vy++){
+                for (let vx=0; vx<comp.H; vx++){
+                  const blockX = mx*comp.H + vx;
+                  const blockY = my*comp.V + vy;
+                  const blockOffset = (blockY*comp.blocksX + blockX)*64;
+                  // Decode block and update DC predictor
+                  const dc = decodeBlock(br, sc.dc, sc.ac, comp.Cq, blockOffset, dcPred[ci]);
+                  dcPred[ci] = dc;
+                }
+              }
+            }
+            mcuCountSinceRST++;
+            if (DRI && (mcuCountSinceRST % DRI) === 0){
+              // BitReader restart callback will zero predictors when it encounters RSTn.
+              // Nothing else to do here.
+            }
+          }
+          if ((my % 4) === 0){ 
+            setStatus(`Decoding scan ${scans.indexOf(scan)+1}/${scans.length} (interleaved)… ${((my+1)/mcusY*100)|0}%`); 
+            setBar(((scans.indexOf(scan) + (my+1)/mcusY) / scans.length) * 0.6);
+            await microYield(); 
+          }
+        }
+      } catch (e) {
+        if (e.message !== "__END_OF_SCAN__") throw e;
+        // Scan ended as expected, continue to next scan
       }
     }
-    if ((my % 4) === 0){ setStatus(`Decoding MCUs… ${((my+1)/mcusY*100)|0}%`); setBar((my+1)/mcusY*0.6); await microYield(); }
-  }
+  } // End of scans loop
 
   // Provide meta + coefficients + quant tables
   return { width, height, Hmax, Vmax, comps: compInfo, DQT };
@@ -1597,9 +1788,8 @@ async function handleFile(file){
       setStatus(`Converting ${fileExt.toUpperCase() || 'image'} to JPEG…`);
       
       try {
-        // Detect iOS for special handling
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-        gMeta = await convertToJPEG(buf, mimeType, file.name, isIOS);
+        // ALWAYS use IndexedDB path for non-JPEGs to ensure proper conversion
+        gMeta = await convertToJPEG(buf, mimeType, file.name, true); // Force IndexedDB
         convertedFormat = fileExt.toUpperCase() || 'image';
         
         // Show conversion success message
@@ -1827,9 +2017,8 @@ async function handleSimpleFile(file) {
       setStatus(`Converting ${fileExt.toUpperCase() || 'image'} to JPEG…`);
       
       try {
-        // Detect iOS for special handling
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-        gMeta = await convertToJPEG(ab, mimeType, file.name, isIOS);
+        // ALWAYS use IndexedDB path for non-JPEGs to ensure proper conversion
+        gMeta = await convertToJPEG(ab, mimeType, file.name, true); // Force IndexedDB
         convertedFormat = fileExt.toUpperCase() || 'image';
         
         // Show conversion success message
@@ -2345,21 +2534,37 @@ document.getElementById('simpleUrlBtn').addEventListener('click', async () => {
 document.addEventListener('paste', async (e) => {
   e.preventDefault();
   
-  // Check for image files
-  const items = Array.from(e.clipboardData.items);
-  const imageItem = items.find(item => item.type.startsWith('image/'));
-  
-  if (imageItem) {
-    const file = imageItem.getAsFile();
-    if (file) {
-      // Determine which mode we're in and handle accordingly
-      if (advancedApp.style.display === 'none') {
-        await handleSimpleFile(file);
-      } else {
-        await handleFile(file);
+  try {
+    // Check for image files
+    const items = Array.from(e.clipboardData.items);
+    const imageItem = items.find(item => item.type.startsWith('image/'));
+    
+    if (imageItem) {
+      let file = imageItem.getAsFile();
+      if (file) {
+        // Force non-JPEGs through canvas conversion
+        const isJPEG = file.type === 'image/jpeg' || file.type === 'image/jpg';
+        if (!isJPEG) {
+          setStatus('Converting pasted image to JPEG...');
+          const arrayBuffer = await file.arrayBuffer();
+          const convertedBuffer = await convertImageViaCanvas(arrayBuffer, file.type || 'image/png', 'pasted-image');
+          const jpegBlob = new Blob([convertedBuffer], { type: 'image/jpeg' });
+          file = new File([jpegBlob], 'pasted-image.jpg', { type: 'image/jpeg' });
+        }
+        
+        // Determine which mode we're in and handle accordingly
+        if (advancedApp.style.display === 'none') {
+          await handleSimpleFile(file);
+        } else {
+          await handleFile(file);
+        }
+        return;
       }
-      return;
     }
+  } catch (error) {
+    console.error('Error handling pasted image:', error);
+    alert('Failed to process pasted image: ' + error.message);
+    setStatus('Error processing paste');
   }
   
   // Check for text (might be URL)
@@ -2367,7 +2572,7 @@ document.addEventListener('paste', async (e) => {
   if (text && (text.startsWith('http://') || text.startsWith('https://') || text.startsWith('data:'))) {
     try {
       setStatus('Loading pasted URL...');
-      const file = await loadImageFromURL(text);
+      const file = await loadImageFromURL(text); // This now properly converts non-JPEGs
       
       // Determine which mode we're in
       if (advancedApp.style.display === 'none') {

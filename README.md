@@ -4,6 +4,22 @@ A web-based JPEG frequency domain analyzer that visualizes how DCT coefficients 
 
 Labs experiment by [Sloop FX](https://sloop.ai)
 
+## ✅ iOS Safari Fix (December 2024)
+
+**The "Huffman decode error" on iOS is now fixed!** The decoder now properly handles:
+
+- **Multi-scan baseline JPEGs**: iOS Safari often creates JPEGs with separate scans for Y, Cb, and Cr components
+- **ECS boundary detection**: Each entropy-coded segment is properly bounded to prevent reading past scan markers
+- **Restart markers (DRI/RST)**: Common in iOS-encoded JPEGs for error resilience
+- **Progressive JPEG fallback**: Automatically converts to baseline via canvas
+- **Universal format support**: PNG, HEIC, WebP, GIF are converted to JPEG for analysis
+
+Technical details: iOS Safari's canvas encoder produces baseline JPEGs with multiple SOS (Start of Scan) markers, not the single-scan JPEGs most decoders expect. The fix implements:
+
+1. **Proper ECS boundary detection**: Each entropy-coded segment is sliced to the next marker
+2. **Non-interleaved scan support**: iOS often writes one component per scan (Y, then Cb, then Cr) where each MCU is a single 8×8 block
+3. **Clean EOF handling**: When the entropy slice ends, decoding stops gracefully instead of injecting fake `0xFF` bytes
+
 ## Motivation
 
 - slice jpeg layers to see each actual layer contribution
