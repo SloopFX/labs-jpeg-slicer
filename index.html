@@ -1,0 +1,2179 @@
+<!doctype html>
+<!-- JPEG Frequency Layers Analyzer v1.0 - Visualize and analyze JPEG DCT frequency layers -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>JPEG Layers — GIF & Compare Modes</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:,">
+<!-- GIF.js for animated GIF export -->
+<script src="https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js"></script>
+<style>
+  :root { --bg:#0b0f14; --panel:#121821; --ink:#e6edf3; --muted:#8aa1b1; --accent:#6cb4ff; --bad:#ff6b6b; }
+  * { box-sizing:border-box }
+  body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background:var(--bg); color:var(--ink); }
+  header { padding:16px 20px; border-bottom:1px solid #1f2a37; background:linear-gradient(180deg,#0e1520,#0b0f14) }
+  h1 { margin:0; font-size:18px }
+  #app { padding:18px; display:flex; flex-direction:column; gap:18px }
+  .panel { background:var(--panel); border:1px solid #1f2a37; border-radius:10px; padding:14px }
+  .comparison-row { display:grid; grid-template-columns:1fr 2fr 1fr; gap:18px; align-items:start }
+  .compare-container { position:relative; width:100%; height:auto; min-height:300px }
+  .layers-list { max-height:400px; overflow-y:auto; display:grid; gap:8px }
+  .layer-row { display:grid; grid-template-columns:30px 80px 1fr auto auto; gap:10px; align-items:center; padding:6px; border:1px solid #1f2a37; border-radius:6px }
+  .layer-row:hover { background:#1a2332 }
+  .layer-row canvas { max-height:60px; width:auto; border-radius:4px }
+  .controls-row { display:flex; gap:12px; flex-wrap:wrap; align-items:center }
+  .drop { border:2px dashed #314458; padding:18px; border-radius:10px; text-align:center; color:var(--muted); cursor:pointer }
+  .drop.drag { border-color:var(--accent); color:var(--ink) }
+  input[type=file]{ display:none }
+  .row{ display:flex; gap:10px; align-items:center; margin-top:12px }
+  .small{ font-size:12px; color:var(--muted) }
+  .kbd{ padding:2px 6px; border:1px solid #34475e; border-radius:6px; color:#c7d6e5; background:#111a26; font-size:11px }
+  button,.btn{ appearance:none; border:1px solid #2a3a4e; background:#142033; color:var(--ink); border-radius:8px; padding:8px 12px; cursor:pointer; font-weight:600 }
+  button:hover,.btn:hover{ border-color:#3a4f69; background:#192744 }
+  canvas{ display:block; max-width:100%; image-rendering:pixelated; background:#0a0f14; border-radius:8px; border:1px solid #1f2a37 }
+  .progress{ height:6px; background:#132033; border-radius:99px; overflow:hidden; border:1px solid #223148 }
+  .progress>div{ height:100%; width:0; background:linear-gradient(90deg,#4aa3ff,#9ad0ff); transition:width .2s }
+  .grid{ display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)) }
+  .k-selector { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; background:#0e1520; border:1px solid #263447; border-radius:8px }
+  .k-selector input[type="number"] { width:45px; background:#0c131d; border:1px solid #263447; border-radius:4px; color:var(--ink); padding:3px; text-align:center; font-size:12px }
+  .k-selector select { font-size:11px }
+  .composite-btn { padding:8px 16px; background:linear-gradient(135deg, #4aa3ff, #6cb4ff); border:none; border-radius:6px; color:#000; font-weight:600; cursor:pointer }
+  .composite-btn:hover { background:linear-gradient(135deg, #6cb4ff, #9ad0ff) }
+  .card{ padding:8px; border:1px solid #1f2a37; border-radius:8px; background:#0e1520 }
+  .card h4{ margin:0 0 6px 0; font-size:12px; color:#9fb0c0 }
+  dialog{ border:none; border-radius:12px; padding:0; width:92vw; max-width:1200px; background:#0d141e; color:var(--ink) }
+  dialog::backdrop{ background:rgba(0,0,0,.6) }
+  .modalHead{ padding:10px 14px; border-bottom:1px solid #1f2a37; display:flex; align-items:center; justify-content:space-between }
+  .modalBody{ padding:14px; display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)) }
+  .warn{ color:var(--bad) }
+</style>
+</head>
+<body>
+<header style="display:flex;justify-content:space-between;align-items:center;">
+  <h1>JPEG Layers — <span id="uiModeLabel" role="status">Compare</span> Mode</h1>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <div style="display:flex;background:#0e1520;border:1px solid #263447;border-radius:6px;overflow:hidden;" role="group" aria-label="View mode selection">
+      <button id="gifModeBtn" style="padding:8px 16px;background:transparent;border:none;color:#8aa1b1;cursor:pointer;font-size:13px;transition:all 0.2s;" aria-pressed="false" aria-label="Switch to GIF animation mode">
+        🎬 GIF Mode
+      </button>
+      <button id="compareModeBtn" style="padding:8px 16px;background:#263447;border:none;color:#e6edf3;cursor:pointer;font-size:13px;transition:all 0.2s;" aria-pressed="true" aria-label="Switch to comparison mode">
+        🔍 Compare Mode
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- Simplified/GIF UI (hidden by default) -->
+<section id="simpleApp" style="display:none;">
+  <div class="panel">
+    <div style="display:grid; grid-template-columns:auto 1fr; gap:20px;">
+      <div id="simpleDrop" class="drop" style="width:200px; cursor:pointer;" role="button" tabindex="0" aria-label="Drop zone for JPEG files">
+        <input id="simpleFile" type="file" accept=".jpg,.jpeg,image/jpeg" style="display:none;" aria-label="Browse for JPEG file" />
+        <p><strong>Drop a <span class="kbd">.jpg</span></strong><br><span class="small">JPEG image</span></p>
+    </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <!-- Main controls matching compare UI style -->
+        <div class="k-selector" style="display:inline-flex;">
+          <label for="simpleK">K:</label> <input type="number" id="simpleK" min="0" max="63" value="5" aria-label="K value (0-63)">
+          <input type="range" id="simpleKSlider" min="0" max="63" value="5" style="width:150px;" aria-label="K value slider">
+          <select id="simpleMode" style="background:#0c131d;border:1px solid #263447;border-radius:4px;color:var(--ink);padding:2px 4px;margin-left:8px;" aria-label="Layer display mode">
+            <option value="cumulative">≤K (Cumulative)</option>
+            <option value="individual">=K (Individual)</option>
+          </select>
+          <select id="simpleColor" style="background:#0c131d;border:1px solid #263447;border-radius:4px;color:var(--ink);padding:2px 4px;margin-left:8px;" aria-label="Color visualization mode">
+            <option value="native">RGB</option>
+            <option value="grayscale">Grayscale</option>
+            <option value="hotspot">Thermal</option>
+            <option value="inverted">Inverted</option>
+          </select>
+    </div>
+
+        <!-- Flipbook controls -->
+        <div style="display:flex;gap:12px;align-items:center;">
+          <button class="btn" id="flipbookBtn" style="font-size:12px;" aria-label="Start or stop animation">
+            ▶ Animate
+          </button>
+          <button class="btn" id="exportGifBtn" style="font-size:12px;" aria-label="Export animation as GIF file">
+            📥 Export GIF
+          </button>
+          <select id="flipDirection" style="background:#0c131d;border:1px solid #263447;border-radius:6px;color:var(--ink);padding:4px;font-size:12px;" aria-label="Animation direction">
+            <option value="forward">0→63</option>
+            <option value="reverse">63→0</option>
+          </select>
+          <label for="flipSpeed" style="font-size:12px;">
+            Speed: <input type="range" id="flipSpeed" min="50" max="500" value="200" style="width:100px;" aria-label="Animation speed in milliseconds">
+            <span id="flipSpeedLabel" aria-live="polite">200ms</span>
+          </label>
+          <label style="font-size:12px; margin-left: 10px; display:inline-flex; align-items:center; gap: 4px; cursor:pointer;">
+            <input type="checkbox" id="flipLoop" checked style="cursor:pointer;"> Loop
+          </label>
+    </div>
+
+        <div style="flex:1;">
+          <div class="progress" style="height:6px;"><div id="simpleBar"></div></div>
+          <span id="simpleStatus" class="small">idle</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Main display -->
+  <div class="panel">
+    <canvas id="simpleCanvas" style="width:100%;height:auto;"></canvas>
+  </div>
+  
+  <!-- Quick layers -->
+  <div class="panel">
+    <h3 style="margin:0 0 12px 0;font-size:14px;">Quick Access Layers</h3>
+    <div id="simpleQuickLayers" class="grid"></div>
+  </div>
+</section>
+
+<!-- Advanced/Compare UI (shown by default) -->
+<section id="app" style="display:block;">
+  <!-- File input and controls -->
+  <div class="panel">
+    <div style="display:grid; grid-template-columns:auto 1fr; gap:20px;">
+      <div id="drop" class="drop" style="width:200px;" role="button" tabindex="0" aria-label="Drop zone for JPEG files">
+        <input id="file" type="file" accept=".jpg,.jpeg,image/jpeg" aria-label="Browse for JPEG file" />
+        <p><strong>Drop a <span class="kbd">.jpg</span></strong><br><span class="small">baseline JPEG</span></p>
+      </div>
+
+      <div class="controls-row">
+        <div class="k-selector">
+          <label class="small">Left K:</label>
+          <input type="number" id="leftK" min="0" max="63" value="0">
+          <input type="range" id="leftKSlider" min="0" max="63" value="0" style="width:100px">
+          <select id="leftMode" style="background:#0c131d;border:1px solid #263447;border-radius:6px;color:var(--ink);padding:4px;font-size:11px;">
+            <option value="cumulative">≤K (Cumulative)</option>
+            <option value="individual">=K (Individual)</option>
+          </select>
+          <select id="leftColor" style="background:#0c131d;border:1px solid #263447;border-radius:6px;color:var(--ink);padding:4px;font-size:11px;">
+            <option value="native">RGB</option>
+            <option value="grayscale">Gray</option>
+            <option value="hotspot">Heat</option>
+            <option value="delta-base">Δ from K=0</option>
+            <option value="delta-prior">Δ from K-1</option>
+          </select>
+    </div>
+
+        <div class="k-selector">
+          <label class="small">Right K:</label>
+          <input type="number" id="rightK" min="0" max="63" value="63">
+          <input type="range" id="rightKSlider" min="0" max="63" value="63" style="width:100px">
+          <select id="rightMode" style="background:#0c131d;border:1px solid #263447;border-radius:6px;color:var(--ink);padding:4px;font-size:11px;">
+            <option value="cumulative">≤K (Cumulative)</option>
+            <option value="individual">=K (Individual)</option>
+          </select>
+          <select id="rightColor" style="background:#0c131d;border:1px solid #263447;border-radius:6px;color:var(--ink);padding:4px;font-size:11px;">
+            <option value="native">RGB</option>
+            <option value="grayscale">Gray</option>
+            <option value="hotspot">Heat</option>
+            <option value="delta-base">Δ from K=0</option>
+            <option value="delta-prior">Δ from K-1</option>
+          </select>
+    </div>
+
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input type="text" id="layerInput" placeholder="e.g. 0-5,10,15-20" 
+                 style="background:#0c131d;border:1px solid #263447;border-radius:6px;color:var(--ink);padding:4px 8px;width:120px;font-size:12px;">
+          <button class="btn" id="buildLeftBtn" style="font-size:11px;padding:5px 8px;" title="Build from left K setting">L→</button>
+          <button class="btn" id="buildRightBtn" style="font-size:11px;padding:5px 8px;" title="Build from right K setting">R→</button>
+          <button class="btn" id="buildChecksBtn" style="font-size:11px;padding:5px 8px;" title="Build from checkboxes">☑→</button>
+          <button class="btn" id="buildTextBtn" style="font-size:11px;padding:5px 8px;" title="Build from text input">T→</button>
+          <button class="btn" id="clearBtn" style="font-size:11px;padding:5px 8px;" title="Clear selections">✕</button>
+        </div>
+        
+        <div style="flex:1;">
+          <div class="progress" style="height:6px;"><div id="bar"></div></div>
+      <span id="status" class="small">idle</span>
+        </div>
+      </div>
+    </div>
+    </div>
+
+  <!-- Main comparison view -->
+  <div class="comparison-row">
+    <div class="panel">
+      <h4 style="margin:0 0 10px 0; font-size:12px; color:#9fb0c0;">Left: K=<span id="leftKLabel">0</span></h4>
+      <canvas id="leftCanvas" width="320" height="240"></canvas>
+  </div>
+
+    <div class="panel">
+      <h4 style="margin:0 0 10px 0; font-size:12px; color:#9fb0c0;">Interactive Comparison</h4>
+      <div id="compareContainer" class="compare-container">
+        <!-- Image compare viewer will be initialized here -->
+      </div>
+    </div>
+    
+    <div class="panel">
+      <h4 style="margin:0 0 10px 0; font-size:12px; color:#9fb0c0;">Right: K=<span id="rightKLabel">63</span></h4>
+      <canvas id="rightCanvas" width="320" height="240"></canvas>
+      </div>
+    </div>
+
+  <!-- All layers list -->
+  <div class="panel">
+    <h3 style="margin:0 0 12px 0; font-size:14px; color:#a9b7c6;">All Frequency Layers</h3>
+    <div id="layersList" class="layers-list">
+      <!-- Will be populated with all 64 layers -->
+    </div>
+  </div>
+</section>
+
+<dialog id="layersModal" aria-label="All layers">
+  <div class="modalHead">
+    <div><strong>All Layers</strong> <span class="small">(DC → low → mid → full)</span></div>
+    <button id="closeModal" class="btn">Close</button>
+  </div>
+  <div id="modalBody" class="modalBody"></div>
+</dialog>
+
+<script>
+/* =========================================================
+   JPEG Layers — Bitstream‑True (Baseline JPEG only)
+   - Parses markers, DQT/DHT/SOF0/SOS
+   - Huffman‑decodes to quantized DCT coefficients (Cq)
+   - Reconstructs layers by enabling zig‑zag indices ≤ K
+   - Supports: 8‑bit baseline, Huffman coding, 3 comps (YCbCr),
+               sampling: 4:4:4, 4:2:2, 4:2:0, restart intervals
+   - Omits: progressive scans (SOF2/SOS Ah/Al != 0), arithmetic coding,
+            CMYK/YCCK/ICC, 12‑bit
+   
+   FUTURE IMPROVEMENTS & SUGGESTIONS:
+   ==================================
+   1. Performance Optimizations:
+      - TODO: Web Workers for parallel layer computation
+      - TODO: WebGL/GPU acceleration for IDCT and color conversion
+      - TODO: Incremental rendering (compute only changed coefficients)
+      - TODO: Adaptive quality based on viewport size
+   
+   2. Visualization Enhancements:
+      - TODO: Split-screen comparison mode (side-by-side layers)
+      - TODO: Animation mode (auto-play through layers)
+      - TODO: 3D visualization of DCT coefficient magnitude
+      - TODO: Frequency domain heatmap overlay
+      - TODO: Perceptual quality metrics (PSNR, SSIM) display
+   
+   3. Analysis Tools:
+      - TODO: Histogram of coefficient distributions
+      - TODO: Bit-rate analysis per layer
+      - TODO: Export layer data as CSV/JSON
+      - TODO: Batch processing for multiple images
+      - TODO: Coefficient editing (modify and reconstruct)
+   
+   4. File Format Support:
+      - TODO: Progressive JPEG (see stub at line 271)
+      - TODO: JPEG 2000 wavelet layers
+      - TODO: WebP/AVIF layer decomposition
+      - TODO: Motion JPEG frame analysis
+   
+   5. UI/UX Improvements:
+      - TODO: Keyboard shortcuts (arrow keys for K navigation)
+      - TODO: Touch/swipe gestures for mobile
+      - TODO: Zoom/pan for detailed inspection
+      - TODO: Save/export individual layers as images
+      - TODO: URL state persistence (shareable links)
+      - TODO: Dark/light theme toggle
+   
+   6. Educational Features:
+      - TODO: Interactive DCT basis function visualization
+      - TODO: Step-by-step decoding explanation
+      - TODO: Compression ratio calculator
+      - TODO: Quality vs file size trade-off graph
+   ========================================================= */
+
+// UI Mode Toggle
+const simpleApp = document.getElementById('simpleApp');
+const advancedApp = document.getElementById('app');
+const uiModeLabel = document.getElementById('uiModeLabel');
+const gifModeBtn = document.getElementById('gifModeBtn');
+const compareModeBtn = document.getElementById('compareModeBtn');
+
+function setMode(mode) {
+  if (mode === 'compare') {
+    simpleApp.style.display = 'none';
+    advancedApp.style.display = 'block';
+    uiModeLabel.textContent = 'Compare';
+    compareModeBtn.style.background = '#263447';
+    compareModeBtn.style.color = '#e6edf3';
+    gifModeBtn.style.background = 'transparent';
+    gifModeBtn.style.color = '#8aa1b1';
+    // If image is loaded, update comparison view
+    if (gMeta) {
+      updateComparison();
+    }
+  } else {
+    simpleApp.style.display = 'block';
+    advancedApp.style.display = 'none';
+    uiModeLabel.textContent = 'GIF';
+    gifModeBtn.style.background = '#263447';
+    gifModeBtn.style.color = '#e6edf3';
+    compareModeBtn.style.background = 'transparent';
+    compareModeBtn.style.color = '#8aa1b1';
+    // If image is loaded, update simple display
+    if (gMeta) {
+      updateSimpleDisplay();
+    }
+  }
+}
+
+// Toggle between GIF and Compare modes
+gifModeBtn.addEventListener('click', () => setMode('gif'));
+compareModeBtn.addEventListener('click', () => setMode('compare'));
+
+// Flipbook animation state
+let flipbookInterval = null;
+let flipbookFrame = 0;
+let isAnimating = false;
+
+/* ---------- UI helpers ---------- */
+const setStatus = s => {
+  const status = document.getElementById('status');
+  const simpleStatus = document.getElementById('simpleStatus');
+  if (status) status.textContent = s;
+  if (simpleStatus) simpleStatus.textContent = s;
+};
+const setBar = p => {
+  const width = (Math.max(0, Math.min(1,p))*100).toFixed(1) + '%';
+  const bar = document.getElementById('bar');
+  const simpleBar = document.getElementById('simpleBar');
+  if (bar) bar.style.width = width;
+  if (simpleBar) simpleBar.style.width = width;
+};
+const microYield = () => new Promise(requestAnimationFrame);
+
+/* ---------- Zig‑zag order (JPEG standard) ---------- */
+const ZIGZAG = [
+ [0,0],[1,0],[0,1],[0,2],[1,1],[2,0],[3,0],[2,1],[1,2],[0,3],
+ [0,4],[1,3],[2,2],[3,1],[4,0],[5,0],[4,1],[3,2],[2,3],[1,4],
+ [0,5],[0,6],[1,5],[2,4],[3,3],[4,2],[5,1],[6,0],[7,0],[6,1],
+ [5,2],[4,3],[3,4],[2,5],[1,6],[0,7],[1,7],[2,6],[3,5],[4,4],
+ [5,3],[6,2],[7,1],[7,2],[6,3],[5,4],[4,5],[3,6],[2,7],[3,7],
+ [4,6],[5,5],[6,4],[7,3],[7,4],[6,5],[5,6],[4,7],[5,7],[6,6],
+ [7,5],[7,6],[6,7],[7,7]
+];
+
+/* ---------- IDCT basis (orthonormal) ---------- */
+const COS = Array.from({length:8}, _=> new Float64Array(8));
+for (let k=0;k<8;k++) for (let n=0;n<8;n++) COS[k][n] = Math.cos(((2*n+1)*k*Math.PI)/16);
+const Cfac = new Float64Array(8).fill(1); Cfac[0] = 1/Math.sqrt(2);
+const IDCT_BASIS = Array.from({length:64}, _=> new Float32Array(64));
+(function buildBasis(){
+  for(let u=0;u<8;u++){
+    for(let v=0;v<8;v++){
+      const base = new Float32Array(64);
+      const scale = 0.25 * Cfac[u] * Cfac[v];
+      for(let y=0;y<8;y++){
+        for(let x=0;x<8;x++){
+          base[y*8+x] = scale * COS[u][x] * COS[v][y];
+        }
+      }
+      IDCT_BASIS[u*8+v] = base;
+    }
+  }
+})();
+
+/* ---------- JPEG bit/marker parsing ---------- */
+class ByteStream {
+  constructor(buf){ this.u8 = new Uint8Array(buf); this.pos = 0; this.mark = 0; }
+  u8at(){ return this.u8[this.pos++]; }
+  u16(){ const v = (this.u8[this.pos]<<8) | this.u8[this.pos+1]; this.pos+=2; return v; }
+  skip(n){ this.pos += n; }
+  slice(n){ const s = this.u8.subarray(this.pos, this.pos+n); this.pos += n; return s; }
+  seek(p){ this.pos = p; }
+  eof(){ return this.pos >= this.u8.length; }
+}
+
+/* Huffman table structure (JPEG canonical) */
+function buildHuffman(lens /* 16 counts */, values /* symbols */){
+  const minCode = new Int32Array(17).fill(-1);
+  const maxCode = new Int32Array(17).fill(-1);
+  const valPtr  = new Int32Array(17).fill(-1);
+
+  // Compute huffsize/huffcode like IJG
+  const huffsize = [];
+  for(let l=1;l<=16;l++) for(let i=0;i<lens[l-1];i++) huffsize.push(l);
+  const huffcode = new Int32Array(huffsize.length);
+  let code = 0, k = 0;
+  for(let l=1;l<=16;l++){
+    const cnt = lens[l-1];
+    if(cnt>0){
+      minCode[l] = code;
+      valPtr[l] = k;
+      for(let i=0;i<cnt;i++) huffcode[k++] = code++;
+      maxCode[l] = code - 1;
+    }
+    code <<= 1;
+  }
+  return { minCode, maxCode, valPtr, huffval: values };
+}
+
+class BitReader {
+  constructor(bytes, restartCb){
+    this.bytes = bytes; this.pos = 0;
+    this.bitBuf = 0; this.bitCnt = 0;
+    this.restartCb = restartCb || (()=>{});
+  }
+  _getByte(){
+    if (this.pos >= this.bytes.length) return 0xFF; // defensive
+    let b = this.bytes[this.pos++];
+    if (b !== 0xFF) return b;
+    // Byte-stuffing / markers
+    let nxt = this.bytes[this.pos++];
+    if (nxt === 0x00) return 0xFF;          // stuffed 0x00 => literal 0xFF
+    if (nxt >= 0xD0 && nxt <= 0xD7){        // restart marker: reset predictors, drop to next byte
+      this.bitBuf = 0; this.bitCnt = 0;
+      this.restartCb();
+      return this._getByte();
+    }
+    // Any other marker: back up two bytes and let caller handle (should not occur in baseline single-scan decoding by MCU count)
+    this.pos -= 2;
+    return 0xFF; // sentinel (won't be shifted in practice since we read exact MCU count)
+  }
+  getBits(n){
+    while(this.bitCnt < n){
+      this.bitBuf = (this.bitBuf<<8) | this._getByte();
+      this.bitCnt += 8;
+    }
+    this.bitCnt -= n;
+    return (this.bitBuf >>> this.bitCnt) & ((1<<n)-1);
+  }
+  getBit(){ return this.getBits(1); }
+  huffDecode(ht){
+    let code = 0, l = 1;
+    for(; l<=16; l++){
+      code = (code<<1) | this.getBit();
+      const max = ht.maxCode[l];
+      if (max >= 0 && code <= max){
+        const idx = ht.valPtr[l] + (code - ht.minCode[l]);
+        return ht.huffval[idx];
+      }
+    }
+    throw new Error("Huffman decode error");
+  }
+}
+function extendSign(v, t){ // JPEG sign extension
+  const vt = 1 << (t-1);
+  if (t && (v < vt)) v -= (1<<t) - 1;
+  return v;
+}
+
+/* ---------- Progressive JPEG fallback using canvas ---------- */
+async function decodeProgressiveJPEG(buf) {
+  // For progressive JPEGs, convert to baseline by re-encoding
+  const blob = new Blob([buf], { type: 'image/jpeg' });
+  const url = URL.createObjectURL(blob);
+  
+  try {
+    const img = new Image();
+    img.src = url;
+    
+    // Wait for image to load
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+    
+    // Create canvas and draw image at full quality
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    
+    // Try to re-encode as baseline JPEG and parse that
+    try {
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+      const base64 = dataUrl.split(',')[1];
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      
+      // Try parsing the re-encoded baseline JPEG
+      const result = await parseAndDecodeBaselineJPEG(bytes.buffer, true);
+      if (result && !result.isProgressive) {
+        result.wasProgressive = true; // Mark that this was originally progressive
+        return result;
+      }
+    } catch (e) {
+      // If re-encoding fails, fall back to approximation
+    }
+    
+    // Fallback: Create approximated DCT coefficients (will have artifacts)
+    const canvas2 = document.createElement('canvas');
+    canvas2.width = img.width;
+    canvas2.height = img.height;
+    const ctx2 = canvas2.getContext('2d', { willReadFrequently: true });
+    ctx2.drawImage(img, 0, 0);
+    
+    // Get pixel data
+    const imageData = ctx2.getImageData(0, 0, img.width, img.height);
+    const pixels = imageData.data;
+    
+    // Approximate the DCT coefficients
+    // For simplicity, we'll create a pseudo-coefficient structure
+    // that works with our rendering pipeline
+    const mcuW = 8, mcuH = 8;
+    const mcusX = Math.ceil(img.width / mcuW);
+    const mcusY = Math.ceil(img.height / mcuH);
+    
+    // Create coefficient arrays for Y, Cb, Cr
+    const coeffsY = [];
+    const coeffsCb = [];
+    const coeffsCr = [];
+    
+    // Process each 8x8 block
+    for (let mcuY = 0; mcuY < mcusY; mcuY++) {
+      for (let mcuX = 0; mcuX < mcusX; mcuX++) {
+        const blockY = new Float64Array(64);
+        const blockCb = new Float64Array(64);
+        const blockCr = new Float64Array(64);
+        
+        // Simple approximation: use pixel values as if they were coefficients
+        // This is not accurate DCT but allows the visualization to work
+        for (let y = 0; y < 8; y++) {
+          for (let x = 0; x < 8; x++) {
+            const px = mcuX * 8 + x;
+            const py = mcuY * 8 + y;
+            
+            if (px < img.width && py < img.height) {
+              const idx = (py * img.width + px) * 4;
+              const r = pixels[idx] || 0;
+              const g = pixels[idx + 1] || 0;
+              const b = pixels[idx + 2] || 0;
+              
+              // Convert to YCbCr
+              const Y = 0.299 * r + 0.587 * g + 0.114 * b;
+              const Cb = 128 + (-0.168736 * r - 0.331264 * g + 0.5 * b);
+              const Cr = 128 + (0.5 * r - 0.418688 * g - 0.081312 * b);
+              
+              const zigIdx = y * 8 + x;
+              blockY[zigIdx] = Y - 128; // Center around 0
+              blockCb[zigIdx] = Cb - 128;
+              blockCr[zigIdx] = Cr - 128;
+            }
+          }
+        }
+        
+        coeffsY.push(blockY);
+        coeffsCb.push(blockCb);
+        coeffsCr.push(blockCr);
+      }
+    }
+    
+    // Create Cq arrays by concatenating all blocks
+    const CqY = new Float64Array(coeffsY.length * 64);
+    const CqCb = new Float64Array(coeffsCb.length * 64);
+    const CqCr = new Float64Array(coeffsCr.length * 64);
+    
+    for (let i = 0; i < coeffsY.length; i++) {
+      CqY.set(coeffsY[i], i * 64);
+    }
+    for (let i = 0; i < coeffsCb.length; i++) {
+      CqCb.set(coeffsCb[i], i * 64);
+    }
+    for (let i = 0; i < coeffsCr.length; i++) {
+      CqCr.set(coeffsCr[i], i * 64);
+    }
+    
+    // Return a structure compatible with our rendering pipeline
+    const result = {
+      width: img.width,
+      height: img.height,
+      Hmax: 1,
+      Vmax: 1,
+      comps: [
+        { 
+          id: 1, h: 1, v: 1, qId: 0, Tq: 0,
+          blocks: coeffsY,
+          Cq: CqY,
+          V: 1, H: 1,
+          blocksX: mcusX,
+          blocksY: mcusY
+        },
+        { 
+          id: 2, h: 1, v: 1, qId: 1, Tq: 1,
+          blocks: coeffsCb,
+          Cq: CqCb,
+          V: 1, H: 1,
+          blocksX: mcusX,
+          blocksY: mcusY
+        },
+        { 
+          id: 3, h: 1, v: 1, qId: 1, Tq: 1,
+          blocks: coeffsCr,
+          Cq: CqCr,
+          V: 1, H: 1,
+          blocksX: mcusX,
+          blocksY: mcusY
+        }
+      ],
+      DQT: { 0: new Float64Array(64).fill(1), 1: new Float64Array(64).fill(1) }, // Dummy quant tables
+      isProgressive: true
+    };
+    
+    // Progressive fallback is being used - frequency analysis will be approximate
+    
+    return result;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/* ---------- JPEG parser/decoder (baseline + progressive fallback) ---------- */
+async function parseAndDecodeBaselineJPEG(buf, skipProgressiveCheck = false){
+  const s = new ByteStream(buf);
+  if (s.u16() !== 0xFFD8) throw new Error("Not a JPEG (missing SOI)");
+  
+  // Quick check for progressive JPEG (skip if we're already converting from progressive)
+  if (!skipProgressiveCheck) {
+    const u8 = new Uint8Array(buf);
+    for (let i = 0; i < u8.length - 1; i++) {
+      if (u8[i] === 0xFF && u8[i+1] === 0xC2) {
+        // Progressive JPEG detected (SOF2 marker)
+        return await decodeProgressiveJPEG(buf);
+      }
+    }
+  }
+  
+  const DQT = {}; // quant tables by id => Float64[64] (natural order)
+  const DHT_DC = {}, DHT_AC = {};
+  let SOF0 = null, DRI = 0;
+  let scan = null;
+  const APP = []; // ignored (for brevity)
+
+  // --- pass 1: parse markers until SOS ---
+  while(!s.eof()){
+    let marker = s.u16();
+    if ((marker & 0xFF00) !== 0xFF00) throw new Error("Bad marker alignment");
+    if (marker === 0xFFD9) break; // EOI
+    if (marker === 0xFFDA){ // SOS
+      const Ls = s.u16();
+      const Ns = s.u8at();
+      const comps = [];
+      for(let i=0;i<Ns;i++){
+        const cid = s.u8at();
+        const tdta = s.u8at(); // (td<<4)|ta
+        comps.push({ id: cid, td: tdta>>4, ta: tdta&15 });
+      }
+      const Ss = s.u8at(), Se = s.u8at(), AhAl = s.u8at();
+      const Ah = AhAl>>4, Al = AhAl&15;
+      if (!skipProgressiveCheck && (Ah!==0 || Al!==0 || Ss!==0 || Se!==63)) {
+        // Progressive JPEG detected in SOS - use canvas-based fallback
+        return await decodeProgressiveJPEG(buf);
+      }
+      scan = { comps, startPos: s.pos, endPos:null };
+      break; // entropy comes next
+    }
+    if (marker === 0xFFD0 || marker === 0xFFD7){ /* RSTn outside SOS */ continue; }
+    const L = s.u16();
+    const start = s.pos;
+    switch(marker){
+      case 0xFFE0: case 0xFFE1: case 0xFFE2: case 0xFFE3: case 0xFFE4:
+      case 0xFFE5: case 0xFFE6: case 0xFFE7: case 0xFFE8: case 0xFFE9:
+      case 0xFFEA: case 0xFFEB: case 0xFFEC: case 0xFFED: case 0xFFEE: case 0xFFEF:
+        APP.push({ marker, data: s.slice(L-2) }); break;
+      case 0xFFDB: { // DQT
+        let remain = L-2;
+        while(remain>0){
+          const pq_tq = s.u8at(); remain--;
+          const pq = pq_tq>>4, tq = pq_tq & 15;
+          const n = 64 * (pq?2:1);
+          const qzig = s.slice(64 * (pq?2:1)); remain -= 64*(pq?2:1);
+          // We support 8-bit tables only (pq=0). If pq=1 (16-bit), convert down:
+          const Q = new Float64Array(64);
+          if (pq===0){
+            for(let i=0;i<64;i++){ const [u,v]=ZIGZAG[i]; Q[u*8+v] = qzig[i]; }
+          } else {
+            // 16-bit table: combine bytes
+            for(let i=0;i<64;i++){ const hi=qzig[2*i], lo=qzig[2*i+1]; const q=(hi<<8)|lo; const [u,v]=ZIGZAG[i]; Q[u*8+v]=q; }
+          }
+          DQT[tq] = Q;
+        }
+      } break;
+      case 0xFFC4: { // DHT
+        let remain = L-2;
+        while(remain>0){
+          const tc_th = s.u8at(); remain--;
+          const tc = tc_th>>4, th = tc_th & 15;
+          const lens = new Uint8Array(16);
+          for(let i=0;i<16;i++){ lens[i] = s.u8at(); }
+          remain -= 16;
+          const total = lens.reduce((a,b)=>a+b,0);
+          const values = s.slice(total);
+          remain -= total;
+          const ht = buildHuffman(lens, values);
+          if (tc===0) DHT_DC[th] = ht; else DHT_AC[th] = ht;
+        }
+      } break;
+      case 0xFFDD: DRI = s.u16(); s.skip(L-2-2); break; // restart interval (MCUs)
+      case 0xFFC0: { // SOF0 baseline
+        const P = s.u8at(); if (P!==8) throw new Error("Only 8-bit baseline supported");
+        const Y = s.u16(), X = s.u16();
+        const Nf = s.u8at();
+        const comps = [];
+        let Hmax=0, Vmax=0;
+        for(let i=0;i<Nf;i++){
+          const C = s.u8at();
+          const HV = s.u8at(); const H = HV>>4, V = HV&15;
+          const Tq = s.u8at();
+          comps.push({ id:C, H, V, Tq });
+          if (H>Hmax) Hmax=H; if (V>Vmax) Vmax=V;
+        }
+        SOF0 = { X, Y, comps, Hmax, Vmax };
+      } break;
+      default:
+        s.skip(L-2); // skip any other segment
+    }
+    if (s.pos !== start + (L-2)) s.seek(start + (L-2));
+  }
+  if (!SOF0) throw new Error("Missing SOF0 (baseline frame)");
+  if (!scan) throw new Error("Missing SOS (scan)");
+
+  // --- Prepare decode geometry ---
+  const { X:width, Y:height, comps, Hmax, Vmax } = SOF0;
+  const mcuW = 8*Hmax, mcuH = 8*Vmax;
+  const mcusX = Math.ceil(width / mcuW), mcusY = Math.ceil(height / mcuH);
+
+  // Map component id -> index 0..(Nc-1), and attach sampling + Q tables
+  const idToIdx = new Map();
+  for (let i=0;i<comps.length;i++) idToIdx.set(comps[i].id, i);
+  const Nc = comps.length;
+  // Allocate per-component block grids
+  const compInfo = comps.map(c=>{
+    const blocksX = mcusX * c.H;
+    const blocksY = mcusY * c.V;
+    return {
+      id: c.id, H:c.H, V:c.V, Tq:c.Tq,
+      blocksX, blocksY,
+      Cq: new Int16Array(blocksX*blocksY*64) // quantized DCT coeffs (natural order u*8+v)
+    };
+  });
+
+  // --- Entropy stream: decode MCUs baseline interleaved ---
+  // Build per-scan huffman table selection
+  const scanComps = scan.comps.map(sc => {
+    const ci = idToIdx.get(sc.id);
+    return { compIdx: ci, dc: DHT_DC[sc.td], ac: DHT_AC[sc.ta], H: comps[ci].H, V: comps[ci].V };
+  });
+
+  // Prepare bit reader over ECS: from current s.pos to next marker (or end); we decode exact MCU count, so we can read to end safely.
+  const ecs = new Uint8Array(s.u8.buffer, s.pos); // from pos to end
+  let mcuCountSinceRST = 0;
+  const dcPred = new Int32Array(Nc).fill(0);
+  const br = new BitReader(ecs, () => { dcPred.fill(0); mcuCountSinceRST = 0; });
+
+  function decodeBlock(htDC, htAC, outCq, blockOffset){
+    // DC
+    const t = br.huffDecode(htDC);
+    const diff = t ? extendSign(br.getBits(t), t) : 0;
+    const dc = diff; // add to predictor outside so we can reset per component
+    // write DC at [0,0]
+    outCq[blockOffset + 0] = dc;
+    // AC
+    let k = 1;
+    while (k < 64){
+      const rs = br.huffDecode(htAC);
+      if (rs === 0x00){ // EOB
+        for(; k<64; k++) outCq[blockOffset + (ZIGZAG[k][0]*8 + ZIGZAG[k][1])] = 0;
+        break;
+      }
+      if (rs === 0xF0){ // ZRL
+        for(let z=0; z<16 && k<64; z++, k++) outCq[blockOffset + (ZIGZAG[k][0]*8 + ZIGZAG[k][1])] = 0;
+        continue;
+      }
+      const run = rs>>4, sz = rs & 15;
+      for (let z=0; z<run && k<64; z++, k++) outCq[blockOffset + (ZIGZAG[k][0]*8 + ZIGZAG[k][1])] = 0;
+      if (k>=64) break;
+      const v = extendSign(br.getBits(sz), sz);
+      const pos = ZIGZAG[k]; outCq[blockOffset + (pos[0]*8 + pos[1])] = v; k++;
+    }
+  }
+
+  // Walk MCUs
+  for (let my=0; my<mcusY; my++){
+    for (let mx=0; mx<mcusX; mx++){
+      // Each scan component in order
+      for (const sc of scanComps){
+        const ci = sc.compIdx;
+        const comp = compInfo[ci];
+        for (let vy=0; vy<comp.V; vy++){
+          for (let vx=0; vx<comp.H; vx++){
+            const blockX = mx*comp.H + vx;
+            const blockY = my*comp.V + vy;
+            const blockOffset = (blockY*comp.blocksX + blockX)*64;
+            // Decode block to temp, then add DC predictor
+            decodeBlock(sc.dc, sc.ac, comp.Cq, blockOffset);
+            comp.Cq[blockOffset + 0] = (comp.Cq[blockOffset + 0] + dcPred[ci]) | 0;
+            dcPred[ci] = comp.Cq[blockOffset + 0];
+          }
+        }
+      }
+      mcuCountSinceRST++;
+      if (DRI && (mcuCountSinceRST % DRI) === 0){
+        // BitReader restart callback will zero predictors when it encounters RSTn.
+        // Nothing else to do here.
+      }
+    }
+    if ((my % 4) === 0){ setStatus(`Decoding MCUs… ${((my+1)/mcusY*100)|0}%`); setBar((my+1)/mcusY*0.6); await microYield(); }
+  }
+
+  // Provide meta + coefficients + quant tables
+  return { width, height, Hmax, Vmax, comps: compInfo, DQT };
+}
+
+/* ---------- Reconstruction (layers by K) ---------- */
+function upsampleNearest(src, sw, sh, fx, fy, dw, dh){
+  // fx,fy: integer scale factors (e.g., 2 if 4:2:0 chroma upsample to luma)
+  const dst = new Float32Array(dw * dh);
+  for (let y=0;y<dh;y++){
+    const sy = Math.min(sh-1, (y / fy) | 0);
+    for (let x=0;x<dw;x++){
+      const sx = Math.min(sw-1, (x / fx) | 0);
+      dst[y*dw + x] = src[sy*sw + sx];
+    }
+  }
+  return dst;
+}
+function ycbcr2rgbPixel(Y,Cb,Cr){
+  const r = Y + 1.402   * (Cr - 128);
+  const g = Y - 0.344136* (Cb - 128) - 0.714136*(Cr - 128);
+  const b = Y + 1.772   * (Cb - 128);
+  return [r<0?0:r>255?255:r, g<0?0:g>255?255:g, b<0?0:b>255?255:b];
+}
+function paintRGB(canvas, R8, w, h){
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const img = ctx.createImageData(w,h);
+  const out = img.data;
+  for(let i=0, p=0;i<w*h;i++, p+=4){
+    out[p] = R8[i*3]; out[p+1]=R8[i*3+1]; out[p+2]=R8[i*3+2]; out[p+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+}
+
+async function renderLayerJPEGStrict(meta, K, limitWidth /* soft limit for speed */, options = {}){
+  // Build per-component spatial planes by summing contributions of coeffs
+  // Options: { 
+  //   mode: 'cumulative'|'individual' - cumulative: K=0 to K, individual: only K
+  //   vizMode: 'raw'|'delta-base'|'delta-prior',
+  //   colorMode: 'native'|'grayscale'|'hotspot',
+  //   baseLayer: ImageData, priorLayer: ImageData
+  // }
+  // Safety check for invalid metadata
+  if (!meta || !meta.comps || meta.comps.length === 0) {
+    console.error('Invalid metadata:', meta);
+    throw new Error("Invalid JPEG metadata - cannot render");
+  }
+  
+  const { width, height, Hmax, Vmax, comps, DQT } = meta;
+  const mcuW = 8*Hmax, mcuH = 8*Vmax;
+  const mcusX = Math.ceil(width/mcuW), mcusY = Math.ceil(height/mcuH);
+  const mode = options.mode || 'cumulative';
+
+  // Work planes at each component native resolution
+  const planes = comps.map(c => new Float32Array(c.blocksX*8 * c.blocksY*8));
+  // For speed on very large images, we can optionally short-circuit if width>limitWidth by skipping some K steps; but here we always compute exactly.
+
+  // For each component, loop basis indices up to K and add tiles
+  for (let ci=0; ci<comps.length; ci++){
+    const comp = comps[ci];
+    const Wc = comp.blocksX*8, Hc = comp.blocksY*8;
+    const Q = DQT[comp.Tq]; // Float64[64] natural order
+    const Cq = comp.Cq;
+    if (!Cq) {
+      // Component has no coefficient data - skipping
+      continue;
+    }
+    const plane = planes[ci];
+
+    // Determine which K values to include
+    const kStart = mode === 'individual' ? K : 0;
+    const kEnd = K;
+    
+    for (let k=kStart; k<=kEnd; k++){
+      const [u,v] = ZIGZAG[k];
+      const basis = IDCT_BASIS[u*8+v];
+      const q = Q[u*8+v];
+      for (let by=0; by<comp.blocksY; by++){
+        for (let bx=0; bx<comp.blocksX; bx++){
+          const blockOff = (by*comp.blocksX + bx)*64;
+          const idx = blockOff + (u*8+v);
+          if (!Cq || idx >= Cq.length) continue;
+          const coeff = Cq[idx] || 0;
+          if (coeff === 0) continue;
+          const scale = coeff * q;
+          // add 8x8 tile
+          const baseOff = by*8*Wc + bx*8;
+          for (let ty=0; ty<8; ty++){
+            const rowOff = baseOff + ty*Wc;
+            const bRow = ty*8;
+            for (let tx=0; tx<8; tx++){
+              plane[rowOff + tx] += basis[bRow + tx] * scale;
+            }
+          }
+        }
+      }
+    }
+    if ((ci % 1) === 0){ setStatus(`Layer K=${K}: component ${ci+1}/${comps.length}`); await microYield(); }
+  }
+
+  // Add +128 level shift and upsample chroma to luma size
+  // Determine luma component (assume comps[0] is Y; common ids: 1=Y,2=Cb,3=Cr)
+  // We'll map by relative sampling to decide scale factors
+  const Yc = comps[0]; // assume first is Y (typical)
+  const Yw = Yc.blocksX*8, Yh = Yc.blocksY*8;
+  const Yplane = planes[0];
+  for(let i=0;i<Yplane.length;i++) Yplane[i] += 128;
+
+  // Cb/Cr upsample
+  const RGB = new Uint8ClampedArray(width*height*3);
+  let CbU = null, CrU = null;
+  if (comps.length >= 3){
+    const Cb = comps[1], Cr = comps[2];
+    const Cbw = Cb.blocksX*8, Cbh = Cb.blocksY*8;
+    const Crw = Cr.blocksX*8, Crh = Cr.blocksY*8;
+    // scale factors
+    const fxCb = Math.round((Yw)/(Cbw)) || 1, fyCb = Math.round((Yh)/(Cbh)) || 1;
+    const fxCr = Math.round((Yw)/(Crw)) || 1, fyCr = Math.round((Yh)/(Crh)) || 1;
+    CbU = upsampleNearest(planes[1].map(v=>v+128), Cbw, Cbh, fxCb, fyCb, Yw, Yh);
+    CrU = upsampleNearest(planes[2].map(v=>v+128), Crw, Crh, fxCr, fyCr, Yw, Yh);
+  } else {
+    // grayscale
+    CbU = new Float32Array(Yw*Yh).fill(128);
+    CrU = new Float32Array(Yw*Yh).fill(128);
+  }
+
+  // Compose to RGB and crop to image size
+  const vizMode = options.vizMode || 'raw';
+  const colorMode = options.colorMode || 'native';
+  
+  for (let y=0; y<height; y++){
+    for (let x=0; x<width; x++){
+      const oY = y*Yw + x;
+      let r,g,b;
+      
+      if (colorMode === 'grayscale') {
+        // Grayscale: use Y channel only
+        const gray = Yplane[oY];
+        r = g = b = gray < 0 ? 0 : gray > 255 ? 255 : gray;
+      } else if (colorMode === 'hotspot') {
+        // Hotspot: visualize energy/activity with heatmap
+        // Calculate local energy as deviation from 128 (DC level)
+        const energy = Math.abs(Yplane[oY] - 128);
+        const normalized = Math.min(255, energy * 3); // amplify for visibility
+        // Red-yellow-white heatmap
+        r = Math.min(255, normalized * 2);
+        g = Math.min(255, normalized * 1.5 - 128);
+        b = Math.min(255, normalized - 192);
+      } else {
+        // Native YCbCr to RGB
+        [r,g,b] = ycbcr2rgbPixel(Yplane[oY], CbU[oY], CrU[oY]);
+      }
+      
+      // Apply visualization mode (delta calculations)
+      if (vizMode === 'delta-base' && options.baseLayer) {
+        // Show difference from base (K=0)
+        const bp = (y*width + x)*3;
+        const dr = (r|0) - options.baseLayer[bp];
+        const dg = (g|0) - options.baseLayer[bp+1];
+        const db = (b|0) - options.baseLayer[bp+2];
+        // Amplify and center deltas for visualization
+        r = 128 + dr * 2;
+        g = 128 + dg * 2;
+        b = 128 + db * 2;
+      } else if (vizMode === 'delta-prior' && options.priorLayer) {
+        // Show difference from prior layer
+        const pp = (y*width + x)*3;
+        const dr = (r|0) - options.priorLayer[pp];
+        const dg = (g|0) - options.priorLayer[pp+1];
+        const db = (b|0) - options.priorLayer[pp+2];
+        // Amplify and center deltas for visualization
+        r = 128 + dr * 2;
+        g = 128 + dg * 2;
+        b = 128 + db * 2;
+      }
+      
+      const p = (y*width + x)*3;
+      RGB[p] = r < 0 ? 0 : r > 255 ? 255 : r|0;
+      RGB[p+1] = g < 0 ? 0 : g > 255 ? 255 : g|0;
+      RGB[p+2] = b < 0 ? 0 : b > 255 ? 255 : b|0;
+    }
+  }
+  return { w: width, h: height, rgb: RGB };
+}
+
+/* ---------- UI wiring & flow ---------- */
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+let gCompareViewer = null; // Image compare viewer instance
+
+drop.addEventListener('click', ()=> fileInput.click());
+// Add keyboard support for Enter/Space
+drop.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    fileInput.click();
+  }
+});
+drop.addEventListener('dragover', e=>{ e.preventDefault(); drop.classList.add('drag'); });
+drop.addEventListener('dragleave', ()=> drop.classList.remove('drag'));
+drop.addEventListener('drop', e=>{
+  e.preventDefault(); drop.classList.remove('drag');
+  const f = e.dataTransfer.files[0]; if (f) handleFile(f);
+});
+fileInput.addEventListener('change', e=>{
+  const f = e.target.files[0]; if (f) handleFile(f);
+});
+
+let gMeta = null; // parsed coefficients/meta cached for slider re-renders
+let gLayerCache = {}; // Cache rendered layers for delta calculations
+let gBaseLayer = null; // K=0 layer for delta-base mode
+let gSelectedLayers = new Set(); // Selected layers for composite
+
+// Parse layer text input (e.g., "0-5,10,15-20")
+function parseLayers(text) {
+  const layers = new Set();
+  const parts = text.split(',');
+  
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    
+    if (trimmed.includes('-')) {
+      // Range
+      const [start, end] = trimmed.split('-').map(s => parseInt(s.trim(), 10));
+      if (!isNaN(start) && !isNaN(end)) {
+        for (let k = Math.min(start, end); k <= Math.max(start, end); k++) {
+          if (k >= 0 && k <= 63) layers.add(k);
+        }
+      }
+    } else {
+      // Single value
+      const k = parseInt(trimmed, 10);
+      if (!isNaN(k) && k >= 0 && k <= 63) layers.add(k);
+    }
+  }
+  
+  return layers;
+}
+
+// Update checkboxes based on selection
+function updateCheckboxes(selectedSet) {
+  const checkboxes = document.querySelectorAll('#layersList input[type="checkbox"]');
+  checkboxes.forEach(cb => {
+    const k = parseInt(cb.value, 10);
+    cb.checked = selectedSet.has(k);
+  });
+  gSelectedLayers = selectedSet;
+}
+
+// Update text input to show current selection
+function updateLayerText() {
+  const sorted = Array.from(gSelectedLayers).sort((a, b) => a - b);
+  if (sorted.length === 0) {
+    document.getElementById('layerInput').value = '';
+    return;
+  }
+  
+  // Create ranges string
+  const ranges = [];
+  let start = sorted[0];
+  let end = sorted[0];
+  
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === end + 1) {
+      end = sorted[i];
+    } else {
+      ranges.push(start === end ? `${start}` : `${start}-${end}`);
+      start = end = sorted[i];
+    }
+  }
+  ranges.push(start === end ? `${start}` : `${start}-${end}`);
+  
+  document.getElementById('layerInput').value = ranges.join(',');
+}
+
+// Helper to convert RGB array to data URL
+function rgbToDataURL(rgb, width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const imageData = ctx.createImageData(width, height);
+  for(let i = 0, p = 0; i < width * height; i++, p += 4) {
+    imageData.data[p] = rgb[i * 3];
+    imageData.data[p + 1] = rgb[i * 3 + 1];
+    imageData.data[p + 2] = rgb[i * 3 + 2];
+    imageData.data[p + 3] = 255;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return canvas.toDataURL();
+}
+
+// Custom comparison viewer with sliding reveal
+function createFallbackComparison(container, leftURL, rightURL, leftK, rightK) {
+  container.innerHTML = '';
+  
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = 'position:relative; width:100%; height:100%; overflow:hidden; background:#0a0f14; border-radius:8px;';
+  
+  // Background image (right - full view)
+  const bgImg = document.createElement('img');
+  bgImg.src = rightURL;
+  bgImg.style.cssText = 'width:100%; height:auto; display:block;';
+  
+  // Sliding container reveals left image on top
+  const slider = document.createElement('div');
+  slider.style.cssText = 'position:absolute; top:0; left:0; width:50%; height:100%; overflow:hidden; border-right:3px solid #6cb4ff; transition:width 0.1s ease-out; will-change:width;';
+  
+  // Foreground image (left - revealed by slider)
+  const fgImg = document.createElement('img');
+  fgImg.src = leftURL;
+  fgImg.style.cssText = 'display:block; width:auto; height:auto;';
+  
+  // Ensure both images have same dimensions
+  const setupImages = () => {
+    const containerWidth = wrapper.offsetWidth;
+    const aspectRatio = bgImg.naturalHeight / bgImg.naturalWidth;
+    const height = containerWidth * aspectRatio;
+    
+    wrapper.style.height = height + 'px';
+    bgImg.style.width = '100%';
+    bgImg.style.height = 'auto';
+    
+    fgImg.style.position = 'absolute';
+    fgImg.style.top = '0';
+    fgImg.style.left = '0';
+    fgImg.style.width = containerWidth + 'px';
+    fgImg.style.height = height + 'px';
+    fgImg.style.objectFit = 'cover';
+  };
+  
+  bgImg.onload = setupImages;
+  fgImg.onload = () => {
+    if (bgImg.complete) setupImages();
+  };
+  
+  slider.appendChild(fgImg);
+  
+  // Slider handle
+  const handle = document.createElement('div');
+  handle.style.cssText = `
+    position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
+    width:40px; height:40px; background:white; border:3px solid #6cb4ff;
+    border-radius:50%; cursor:ew-resize; box-shadow:0 2px 10px rgba(0,0,0,0.3);
+    z-index:10; transition:left 0.1s ease-out; will-change:left;
+  `;
+  handle.innerHTML = '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:0;height:0;border-top:8px solid transparent;border-bottom:8px solid transparent;border-right:8px solid #6cb4ff;margin-left:-4px;"></div><div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:0;height:0;border-top:8px solid transparent;border-bottom:8px solid transparent;border-left:8px solid #6cb4ff;margin-left:4px;"></div>';
+  
+  // Labels
+  const leftLabel = document.createElement('div');
+  leftLabel.style.cssText = 'position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.7); color:white; padding:6px 12px; border-radius:6px; font-size:13px; font-weight:600;';
+  leftLabel.textContent = `K=${leftK}`;
+  
+  const rightLabel = document.createElement('div');
+  rightLabel.style.cssText = 'position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.7); color:white; padding:6px 12px; border-radius:6px; font-size:13px; font-weight:600;';
+  rightLabel.textContent = `K=${rightK}`;
+  
+  wrapper.appendChild(bgImg);
+  wrapper.appendChild(slider);
+  wrapper.appendChild(handle);
+  wrapper.appendChild(leftLabel);
+  wrapper.appendChild(rightLabel);
+  
+  // Mouse/touch interaction with performance optimizations
+  let isDragging = false;
+  let animFrame = null;
+  
+  const updatePosition = (clientX) => {
+    if (animFrame) return; // Skip if already updating
+    
+    animFrame = requestAnimationFrame(() => {
+      const rect = wrapper.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const percentage = Math.max(0, Math.min(100, (x / rect.width) * 100));
+      slider.style.width = percentage + '%';
+      handle.style.left = percentage + '%';
+      animFrame = null;
+    });
+  };
+  
+  const startDrag = (e) => {
+    e.preventDefault();
+    isDragging = true;
+    handle.style.cursor = 'grabbing';
+    // Disable transitions during drag
+    slider.style.transition = 'none';
+    handle.style.transition = 'none';
+  };
+  
+  const endDrag = () => {
+    isDragging = false;
+    handle.style.cursor = 'ew-resize';
+    // Re-enable transitions
+    slider.style.transition = 'width 0.1s ease-out';
+    handle.style.transition = 'left 0.1s ease-out';
+  };
+  
+  handle.addEventListener('mousedown', startDrag);
+  wrapper.addEventListener('mousemove', (e) => {
+    if (isDragging) {
+      e.preventDefault();
+      updatePosition(e.clientX);
+    }
+  });
+  document.addEventListener('mouseup', endDrag);
+  wrapper.addEventListener('mouseleave', endDrag);
+  
+  // Touch support
+  handle.addEventListener('touchstart', startDrag, { passive: false });
+  wrapper.addEventListener('touchmove', (e) => {
+    if (isDragging && e.touches[0]) {
+      e.preventDefault();
+      updatePosition(e.touches[0].clientX);
+    }
+  }, { passive: false });
+  document.addEventListener('touchend', endDrag);
+  
+  // Click to position
+  wrapper.addEventListener('click', (e) => {
+    if (e.target !== handle && !handle.contains(e.target)) {
+      updatePosition(e.clientX);
+    }
+  });
+  
+  container.appendChild(wrapper);
+}
+
+// Update comparison view
+async function updateComparison() {
+  if (!gMeta) return;
+  
+  const leftK = parseInt(document.getElementById('leftK').value, 10);
+  const rightK = parseInt(document.getElementById('rightK').value, 10);
+  const leftMode = document.getElementById('leftMode').value;
+  const rightMode = document.getElementById('rightMode').value;
+  const leftColor = document.getElementById('leftColor').value;
+  const rightColor = document.getElementById('rightColor').value;
+  
+  document.getElementById('leftKLabel').textContent = leftK + (leftMode === 'individual' ? ' only' : ' cumulative');
+  document.getElementById('rightKLabel').textContent = rightK + (rightMode === 'individual' ? ' only' : ' cumulative');
+  
+  setStatus(`Rendering comparison...`);
+  
+  // Cache keys include mode
+  const leftCacheKey = `${leftK}-${leftMode}`;
+  const rightCacheKey = `${rightK}-${rightMode}`;
+  
+  // Render left layer
+  if (!gLayerCache[leftCacheKey]) {
+    const {rgb} = await renderLayerJPEGStrict(gMeta, leftK, 640, { mode: leftMode });
+    gLayerCache[leftCacheKey] = rgb;
+  }
+  let leftRGB = gLayerCache[leftCacheKey];
+  
+  // Render right layer
+  if (!gLayerCache[rightCacheKey]) {
+    const {rgb} = await renderLayerJPEGStrict(gMeta, rightK, 640, { mode: rightMode });
+    gLayerCache[rightCacheKey] = rgb;
+  }
+  let rightRGB = gLayerCache[rightCacheKey];
+  
+  // Apply color modes and delta visualizations
+  const applyColorMode = async (rgb, k, mode, colorMode) => {
+    const result = new Uint8ClampedArray(rgb.length);
+    
+    if (colorMode === 'grayscale') {
+      // Convert to grayscale using Y channel
+      for (let i = 0; i < rgb.length; i += 3) {
+        const gray = 0.299 * rgb[i] + 0.587 * rgb[i+1] + 0.114 * rgb[i+2];
+        result[i] = result[i+1] = result[i+2] = gray;
+      }
+    } else if (colorMode === 'hotspot') {
+      // Energy visualization
+      for (let i = 0; i < rgb.length; i += 3) {
+        const energy = Math.sqrt(rgb[i]*rgb[i] + rgb[i+1]*rgb[i+1] + rgb[i+2]*rgb[i+2]) / Math.sqrt(3*255*255);
+        const normalized = Math.min(255, energy * 255 * 2);
+        result[i] = Math.min(255, normalized * 2);
+        result[i+1] = Math.min(255, normalized * 1.5 - 128);
+        result[i+2] = Math.min(255, normalized - 192);
+      }
+    } else if (colorMode === 'delta-base') {
+      // Delta from K=0
+      if (!gLayerCache['0-cumulative']) {
+        const {rgb} = await renderLayerJPEGStrict(gMeta, 0, 640, { mode: 'cumulative' });
+        gLayerCache['0-cumulative'] = rgb;
+      }
+      const baseRGB = gLayerCache['0-cumulative'];
+      for (let i = 0; i < rgb.length; i += 3) {
+        const dr = rgb[i] - baseRGB[i];
+        const dg = rgb[i+1] - baseRGB[i+1];
+        const db = rgb[i+2] - baseRGB[i+2];
+        result[i] = Math.max(0, Math.min(255, 128 + dr * 2));
+        result[i+1] = Math.max(0, Math.min(255, 128 + dg * 2));
+        result[i+2] = Math.max(0, Math.min(255, 128 + db * 2));
+      }
+    } else if (colorMode === 'delta-prior') {
+      // Delta from K-1 (or from zero if K=0)
+      if (k === 0) {
+      // For K=0, show difference from pure gray
+      for (let i = 0; i < rgb.length; i += 3) {
+        // Show the DC component itself as the delta
+        result[i] = Math.max(0, Math.min(255, 128 + (rgb[i] - 128) * 2));
+        result[i+1] = Math.max(0, Math.min(255, 128 + (rgb[i+1] - 128) * 2));
+        result[i+2] = Math.max(0, Math.min(255, 128 + (rgb[i+2] - 128) * 2));
+      }
+      } else {
+        const priorK = k - 1;
+        const priorKey = `${priorK}-${mode}`;
+        if (!gLayerCache[priorKey]) {
+          const {rgb} = await renderLayerJPEGStrict(gMeta, priorK, 640, { mode });
+          gLayerCache[priorKey] = rgb;
+        }
+        const priorRGB = gLayerCache[priorKey];
+        for (let i = 0; i < rgb.length; i += 3) {
+          const dr = rgb[i] - priorRGB[i];
+          const dg = rgb[i+1] - priorRGB[i+1];
+          const db = rgb[i+2] - priorRGB[i+2];
+          result[i] = Math.max(0, Math.min(255, 128 + dr * 2));
+          result[i+1] = Math.max(0, Math.min(255, 128 + dg * 2));
+          result[i+2] = Math.max(0, Math.min(255, 128 + db * 2));
+        }
+      }
+    } else {
+      // Native RGB
+      result.set(rgb);
+    }
+    
+    return result;
+  };
+  
+  leftRGB = await applyColorMode(leftRGB, leftK, leftMode, leftColor);
+  rightRGB = await applyColorMode(rightRGB, rightK, rightMode, rightColor);
+  
+  // Update side canvases
+  paintRGB(document.getElementById('leftCanvas'), leftRGB, gMeta.width, gMeta.height);
+  paintRGB(document.getElementById('rightCanvas'), rightRGB, gMeta.width, gMeta.height);
+  
+  // Update image compare viewer
+  const container = document.getElementById('compareContainer');
+  container.innerHTML = ''; // Clear previous
+  
+  const leftURL = rgbToDataURL(leftRGB, gMeta.width, gMeta.height);
+  const rightURL = rgbToDataURL(rightRGB, gMeta.width, gMeta.height);
+  
+  const viewerDiv = document.createElement('div');
+  container.appendChild(viewerDiv);
+  
+  // Always use our custom comparison viewer for reliability
+  // The external library has compatibility issues
+  createFallbackComparison(container, leftURL, rightURL, leftK, rightK);
+  
+  // Alternative: Try external library if available (uncomment to test)
+  /*
+  if (typeof ImageCompare !== 'undefined') {
+    try {
+      const viewer = new ImageCompare(viewerDiv, {
+        leftImageSrc: leftURL,
+        rightImageSrc: rightURL,
+        startPosition: 50
+      });
+      viewer.mount();
+    } catch(e) {
+      // External library failed, using built-in
+      createFallbackComparison(container, leftURL, rightURL, leftK, rightK);
+    }
+  }
+  */
+  
+  setStatus('Ready');
+}
+
+// Build composite from selected layers
+async function buildComposite(layers = null) {
+  const selectedK = layers ? Array.from(layers) : Array.from(gSelectedLayers);
+  
+  if (!gMeta || selectedK.length === 0) {
+    alert('Please select layers to composite');
+    return;
+  }
+  
+  setStatus('Building composite...');
+  
+  // Sort the selected K values
+  selectedK.sort((a, b) => a - b);
+  const maxK = Math.max(...selectedK);
+  
+  // Custom reconstruction with only selected frequencies
+  const { width, height, Hmax, Vmax, comps, DQT } = gMeta;
+  const mcuW = 8*Hmax, mcuH = 8*Vmax;
+  const mcusX = Math.ceil(width/mcuW), mcusY = Math.ceil(height/mcuH);
+  
+  // Work planes at each component native resolution
+  const planes = comps.map(c => new Float32Array(c.blocksX*8 * c.blocksY*8));
+  
+  // Add only selected K contributions
+  for (let ci=0; ci<comps.length; ci++){
+    const comp = comps[ci];
+    const Wc = comp.blocksX*8, Hc = comp.blocksY*8;
+    const Q = DQT[comp.Tq];
+    const Cq = comp.Cq;
+    if (!Cq) {
+      // Component has no coefficient data - skipping
+      continue;
+    }
+    const plane = planes[ci];
+
+    for (const k of selectedK){
+      const [u,v] = ZIGZAG[k];
+      const basis = IDCT_BASIS[u*8+v];
+      const q = Q[u*8+v];
+      for (let by=0; by<comp.blocksY; by++){
+        for (let bx=0; bx<comp.blocksX; bx++){
+          const blockOff = (by*comp.blocksX + bx)*64;
+          const idx = blockOff + (u*8+v);
+          if (!Cq || idx >= Cq.length) continue;
+          const coeff = Cq[idx] || 0;
+          if (coeff === 0) continue;
+          const scale = coeff * q;
+          // add 8x8 tile
+          const baseOff = by*8*Wc + bx*8;
+          for (let ty=0; ty<8; ty++){
+            const rowOff = baseOff + ty*Wc;
+            const bRow = ty*8;
+            for (let tx=0; tx<8; tx++){
+              plane[rowOff + tx] += basis[bRow + tx] * scale;
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // Convert to RGB
+  const Yc = comps[0];
+  const Yw = Yc.blocksX*8, Yh = Yc.blocksY*8;
+  const Yplane = planes[0];
+  for(let i=0;i<Yplane.length;i++) Yplane[i] += 128;
+  
+  let CbU = null, CrU = null;
+  if (comps.length >= 3){
+    const Cb = comps[1], Cr = comps[2];
+    const Cbw = Cb.blocksX*8, Cbh = Cb.blocksY*8;
+    const Crw = Cr.blocksX*8, Crh = Cr.blocksY*8;
+    const fxCb = Math.round((Yw)/(Cbw)) || 1, fyCb = Math.round((Yh)/(Cbh)) || 1;
+    const fxCr = Math.round((Yw)/(Crw)) || 1, fyCr = Math.round((Yh)/(Crh)) || 1;
+    CbU = upsampleNearest(planes[1].map(v=>v+128), Cbw, Cbh, fxCb, fyCb, Yw, Yh);
+    CrU = upsampleNearest(planes[2].map(v=>v+128), Crw, Crh, fxCr, fyCr, Yw, Yh);
+  } else {
+    CbU = new Float32Array(Yw*Yh).fill(128);
+    CrU = new Float32Array(Yw*Yh).fill(128);
+  }
+  
+  const RGB = new Uint8ClampedArray(width*height*3);
+  for (let y=0; y<height; y++){
+    for (let x=0; x<width; x++){
+      const oY = y*Yw + x;
+      const [r,g,b] = ycbcr2rgbPixel(Yplane[oY], CbU[oY], CrU[oY]);
+      const p = (y*width + x)*3;
+      RGB[p] = r|0; RGB[p+1] = g|0; RGB[p+2] = b|0;
+    }
+  }
+  
+  // Display composite in right panel
+  paintRGB(document.getElementById('rightCanvas'), RGB, width, height);
+  document.getElementById('rightKLabel').textContent = `Composite (${gSelectedLayers.size} layers)`;
+  
+  setStatus('Composite built');
+}
+
+async function handleFile(file){
+  setBar(0); setStatus('reading…');
+  if (!(file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name))) {
+    alert("Please choose a JPEG file (.jpg).");
+    return;
+  }
+  const buf = await file.arrayBuffer();
+
+  try {
+    setStatus('parsing JPEG…');
+    gMeta = await parseAndDecodeBaselineJPEG(buf);
+    gLayerCache = {};
+    gSelectedLayers.clear();
+    
+    // Show message if progressive JPEG
+    if (gMeta.isProgressive) {
+      setStatus('⚠ Progressive JPEG - frequency analysis may have artifacts');
+      setTimeout(() => setStatus('Ready (Progressive mode)'), 3000);
+    } else if (gMeta.wasProgressive) {
+      setStatus('✓ Progressive JPEG converted to baseline - ready');
+      setTimeout(() => setStatus('Ready'), 2000);
+    }
+    
+    // Render initial comparison
+    await updateComparison();
+    
+    // Populate layers list
+    const layersList = document.getElementById('layersList');
+    layersList.innerHTML = '';
+    
+    setStatus('Rendering layer previews...');
+    for (let k = 0; k < 64; k++) {
+      const {rgb} = await renderLayerJPEGStrict(gMeta, k, 160, { mode: 'cumulative' }); // Small thumbnails
+      gLayerCache[`${k}-cumulative`] = rgb;
+      
+      const row = document.createElement('div');
+      row.className = 'layer-row';
+      
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = k;
+      checkbox.onchange = (e) => {
+        if (e.target.checked) {
+          gSelectedLayers.add(k);
+        } else {
+          gSelectedLayers.delete(k);
+        }
+        updateLayerText();
+      };
+      
+      const label = document.createElement('span');
+      label.className = 'small';
+      label.textContent = k === 0 ? 'K=0 (DC)' : `K=${k}`;
+      
+      const canvas = document.createElement('canvas');
+      paintRGB(canvas, gLayerCache[`${k}-cumulative`], gMeta.width, gMeta.height);
+      
+      const selectLeftBtn = document.createElement('button');
+      selectLeftBtn.textContent = 'Left';
+      selectLeftBtn.className = 'btn';
+      selectLeftBtn.style.fontSize = '10px';
+      selectLeftBtn.style.padding = '4px 8px';
+      selectLeftBtn.onclick = () => {
+        document.getElementById('leftK').value = k;
+        document.getElementById('leftKSlider').value = k;
+        updateComparison();
+      };
+      
+      const selectRightBtn = document.createElement('button');
+      selectRightBtn.textContent = 'Right';
+      selectRightBtn.className = 'btn';
+      selectRightBtn.style.fontSize = '10px';
+      selectRightBtn.style.padding = '4px 8px';
+      selectRightBtn.onclick = () => {
+        document.getElementById('rightK').value = k;
+        document.getElementById('rightKSlider').value = k;
+        updateComparison();
+      };
+      
+      row.appendChild(checkbox);
+      row.appendChild(label);
+      row.appendChild(canvas);
+      row.appendChild(selectLeftBtn);
+      row.appendChild(selectRightBtn);
+      
+      layersList.appendChild(row);
+      
+      if (k % 4 === 0) {
+        setBar((k + 1) / 64);
+        await microYield();
+      }
+    }
+    
+    setBar(1); setStatus('Ready');
+  } catch(err){
+    console.error(err);
+    setStatus('error');
+    alert(err.message || String(err));
+  }
+}
+
+// Wire up controls
+document.getElementById('leftK').oninput = (e) => {
+  document.getElementById('leftKSlider').value = e.target.value;
+  updateComparison();
+};
+document.getElementById('leftKSlider').oninput = (e) => {
+  document.getElementById('leftK').value = e.target.value;
+  updateComparison();
+};
+document.getElementById('rightK').oninput = (e) => {
+  document.getElementById('rightKSlider').value = e.target.value;
+  updateComparison();
+};
+document.getElementById('rightKSlider').oninput = (e) => {
+  document.getElementById('rightK').value = e.target.value;
+  updateComparison();
+};
+document.getElementById('leftMode').onchange = updateComparison;
+document.getElementById('rightMode').onchange = updateComparison;
+document.getElementById('leftColor').onchange = updateComparison;
+document.getElementById('rightColor').onchange = updateComparison;
+
+// Build button handlers
+document.getElementById('buildLeftBtn').onclick = () => {
+  const leftK = parseInt(document.getElementById('leftK').value, 10);
+  const leftMode = document.getElementById('leftMode').value;
+  if (leftMode === 'individual') {
+    updateCheckboxes(new Set([leftK]));
+  } else {
+    const layers = new Set();
+    for (let k = 0; k <= leftK; k++) layers.add(k);
+    updateCheckboxes(layers);
+  }
+  buildComposite();
+};
+
+document.getElementById('buildRightBtn').onclick = () => {
+  const rightK = parseInt(document.getElementById('rightK').value, 10);
+  const rightMode = document.getElementById('rightMode').value;
+  if (rightMode === 'individual') {
+    updateCheckboxes(new Set([rightK]));
+  } else {
+    const layers = new Set();
+    for (let k = 0; k <= rightK; k++) layers.add(k);
+    updateCheckboxes(layers);
+  }
+  buildComposite();
+};
+
+document.getElementById('buildChecksBtn').onclick = () => {
+  buildComposite();
+};
+
+document.getElementById('buildTextBtn').onclick = () => {
+  const text = document.getElementById('layerInput').value;
+  const layers = parseLayers(text);
+  if (layers.size > 0) {
+    updateCheckboxes(layers);
+    buildComposite();
+  } else {
+    alert('Please enter valid layer ranges (e.g., 0-5,10,15-20)');
+  }
+};
+
+document.getElementById('clearBtn').onclick = () => {
+  updateCheckboxes(new Set());
+  document.getElementById('layerInput').value = '';
+};
+
+// Update checkboxes when text input changes (with debounce)
+let textInputTimer = null;
+document.getElementById('layerInput').addEventListener('input', (e) => {
+  clearTimeout(textInputTimer);
+  textInputTimer = setTimeout(() => {
+    const layers = parseLayers(e.target.value);
+    if (layers.size > 0 || e.target.value.trim() === '') {
+      updateCheckboxes(layers);
+    }
+  }, 300);
+});
+
+// ========== SIMPLIFIED UI HANDLERS ==========
+
+// Handle simple file input
+async function handleSimpleFile(file) {
+  setBar(0); 
+  setStatus('reading…');
+  
+  if (!(file.type === 'image/jpeg' || /\.jpe?g$/i.test(file.name))) {
+    alert("Please choose a JPEG file (.jpg).");
+setStatus('idle');
+    return;
+  }
+  
+  try {
+    const ab = await file.arrayBuffer();
+    
+    setStatus('parsing JPEG…');
+    gMeta = await parseAndDecodeBaselineJPEG(ab);
+    gLayerCache = {};
+    
+    // Show message if progressive JPEG
+    if (gMeta.isProgressive) {
+      setStatus('⚠ Progressive JPEG - frequency analysis may have artifacts');
+      setTimeout(() => setStatus('Ready (Progressive mode)'), 3000);
+    } else if (gMeta.wasProgressive) {
+      setStatus('✓ Progressive JPEG converted to baseline - ready');
+      setTimeout(() => setStatus('Ready'), 2000);
+    }
+    
+    // Render base layer
+    const {rgb: baseRGB} = await renderLayerJPEGStrict(gMeta, 0, 640, { mode: 'cumulative' });
+    gBaseLayer = baseRGB;
+    gLayerCache['0-cumulative'] = baseRGB;
+    
+    // Initial display
+    updateSimpleDisplay();
+    
+    // Populate quick layers
+    const quickContainer = document.getElementById('simpleQuickLayers');
+    quickContainer.innerHTML = '';
+    const quickK = [0, 1, 2, 3, 5, 8, 14, 20, 30, 40, 50, 63];
+    
+    for (const k of quickK) {
+      const div = document.createElement('div');
+      div.className = 'card';
+      
+      const label = document.createElement('h4');
+      label.textContent = k === 0 ? 'DC Only' : k === 63 ? 'Full' : `K=${k}`;
+      
+      const canvas = document.createElement('canvas');
+      canvas.style.cursor = 'pointer';
+      canvas.onclick = () => {
+        document.getElementById('simpleK').value = k;
+        document.getElementById('simpleKSlider').value = k;
+        updateSimpleDisplay();
+      };
+      
+      const {rgb} = await renderLayerJPEGStrict(gMeta, k, 160, { mode: 'cumulative' });
+      paintRGB(canvas, rgb, gMeta.width, gMeta.height);
+      
+      div.appendChild(label);
+      div.appendChild(canvas);
+      quickContainer.appendChild(div);
+    }
+    
+    setStatus('Ready');
+  } catch (e) {
+    console.error(e);
+    setStatus('Error: ' + e.message);
+  }
+}
+
+// Update simple display based on current settings
+async function updateSimpleDisplay() {
+  if (!gMeta) return;
+  
+  const k = parseInt(document.getElementById('simpleK').value, 10);
+  const mode = document.getElementById('simpleMode').value;
+  const colorMode = document.getElementById('simpleColor').value;
+  
+  setStatus(`Rendering K=${k} (${mode})...`);
+  
+  // Get or compute RGB
+  const cacheKey = `${k}-${mode}`;
+  let rgb;
+  if (gLayerCache[cacheKey]) {
+    rgb = gLayerCache[cacheKey];
+  } else {
+    const result = await renderLayerJPEGStrict(gMeta, k, 640, { mode });
+    rgb = result.rgb;
+    gLayerCache[cacheKey] = rgb;
+  }
+  
+  // Apply color mode
+  const displayRGB = new Uint8ClampedArray(rgb);
+  if (colorMode === 'grayscale') {
+    for (let i = 0; i < displayRGB.length; i += 3) {
+      const gray = Math.round(0.299 * displayRGB[i] + 0.587 * displayRGB[i+1] + 0.114 * displayRGB[i+2]);
+      displayRGB[i] = displayRGB[i+1] = displayRGB[i+2] = gray;
+    }
+  } else if (colorMode === 'hotspot') {
+    // Thermal/infrared colormap (black -> purple -> blue -> cyan -> green -> yellow -> orange -> red -> white)
+    for (let i = 0; i < displayRGB.length; i += 3) {
+      const intensity = (0.299 * displayRGB[i] + 0.587 * displayRGB[i+1] + 0.114 * displayRGB[i+2]) / 255;
+      
+      let r, g, b;
+      if (intensity < 0.125) {
+        // Black to purple
+        const t = intensity / 0.125;
+        r = 80 * t;
+        g = 0;
+        b = 80 * t;
+      } else if (intensity < 0.25) {
+        // Purple to blue
+        const t = (intensity - 0.125) / 0.125;
+        r = 80 * (1 - t);
+        g = 0;
+        b = 80 + 175 * t;
+      } else if (intensity < 0.375) {
+        // Blue to cyan
+        const t = (intensity - 0.25) / 0.125;
+        r = 0;
+        g = 255 * t;
+        b = 255;
+      } else if (intensity < 0.5) {
+        // Cyan to green
+        const t = (intensity - 0.375) / 0.125;
+        r = 0;
+        g = 255;
+        b = 255 * (1 - t);
+      } else if (intensity < 0.625) {
+        // Green to yellow
+        const t = (intensity - 0.5) / 0.125;
+        r = 255 * t;
+        g = 255;
+        b = 0;
+      } else if (intensity < 0.75) {
+        // Yellow to orange
+        const t = (intensity - 0.625) / 0.125;
+        r = 255;
+        g = 255 * (1 - 0.5 * t);
+        b = 0;
+      } else if (intensity < 0.875) {
+        // Orange to red
+        const t = (intensity - 0.75) / 0.125;
+        r = 255;
+        g = 128 * (1 - t);
+        b = 0;
+      } else {
+        // Red to white
+        const t = (intensity - 0.875) / 0.125;
+        r = 255;
+        g = 255 * t;
+        b = 255 * t;
+      }
+      
+      displayRGB[i] = Math.round(r);
+      displayRGB[i+1] = Math.round(g);
+      displayRGB[i+2] = Math.round(b);
+    }
+  } else if (colorMode === 'inverted') {
+    // Inverted colors
+    for (let i = 0; i < displayRGB.length; i++) {
+      displayRGB[i] = 255 - displayRGB[i];
+    }
+  }
+  
+  paintRGB(document.getElementById('simpleCanvas'), displayRGB, gMeta.width, gMeta.height);
+  setStatus('Ready');
+}
+
+// Flipbook animation functions
+async function startFlipbook() {
+  if (!gMeta || isAnimating) return;
+  
+  isAnimating = true;
+  document.getElementById('flipbookBtn').textContent = '⏸ Pause';
+  
+  const direction = document.getElementById('flipDirection').value;
+  const speed = parseInt(document.getElementById('flipSpeed').value, 10);
+  const mode = document.getElementById('simpleMode').value;
+  
+  // Build frame sequence
+  let frames = [];
+  if (direction === 'forward') {
+    frames = Array.from({length: 64}, (_, i) => i);
+  } else {
+    frames = Array.from({length: 64}, (_, i) => 63 - i);
+  }
+  
+  // For reverse cumulative, we need to build from full and subtract
+  // <!-- TODO: Implement reverse cumulative by building full image first,
+  //      then progressively removing higher frequency components.
+  //      This requires modifying the rendering to support "exclude" mode
+  //      where we skip certain K values during reconstruction. -->
+  
+  flipbookFrame = 0;
+  
+  flipbookInterval = setInterval(async () => {
+    if (!isAnimating) {
+      clearInterval(flipbookInterval);
+      return;
+    }
+    
+    const k = frames[flipbookFrame];
+    document.getElementById('simpleK').value = k;
+    document.getElementById('simpleKSlider').value = k;
+    
+    await updateSimpleDisplay();
+    
+    flipbookFrame = (flipbookFrame + 1) % frames.length;
+    
+    if (flipbookFrame === 0 && !document.getElementById('flipLoop')?.checked) {
+      stopFlipbook();
+    }
+  }, speed);
+}
+
+function stopFlipbook() {
+  isAnimating = false;
+  if (flipbookInterval) {
+    clearInterval(flipbookInterval);
+    flipbookInterval = null;
+  }
+  document.getElementById('flipbookBtn').textContent = '▶ Animate';
+}
+
+// Export animation as actual GIF file
+async function exportAnimation() {
+  if (!gMeta) {
+    alert('Please load an image first');
+    return;
+  }
+  
+  // Check if GIF.js is available
+  if (typeof GIF === 'undefined') {
+    alert('GIF.js library not loaded. Please serve via HTTP (e.g., python -m http.server 8000)');
+    return;
+  }
+  
+  // Check if we're on file:// protocol
+  if (window.location.protocol === 'file:') {
+    alert('GIF export requires HTTP. Please run: python -m http.server 8000');
+    return;
+  }
+  
+  setStatus('Preparing GIF export...');
+  
+  const direction = document.getElementById('flipDirection').value;
+  const mode = document.getElementById('simpleMode').value;
+  const colorMode = document.getElementById('simpleColor').value;
+  const speed = parseInt(document.getElementById('flipSpeed').value, 10);
+  
+  // Build frame sequence - using key frames to reduce size
+  let frames = [];
+  const keyFrames = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 36, 40, 45, 50, 55, 60, 63];
+  if (direction === 'forward') {
+    frames = keyFrames;
+  } else {
+    frames = keyFrames.slice().reverse();
+  }
+  
+  // Create GIF encoder with local worker script to avoid CORS
+  const gif = new GIF({
+    workers: 2,
+    quality: 10,
+    width: gMeta.width,
+    height: gMeta.height,
+    workerScript: 'gif.worker.js' // Local file to avoid CORS issues
+  });
+  
+  // Create a canvas for rendering frames
+  const canvas = document.createElement('canvas');
+  canvas.width = gMeta.width;
+  canvas.height = gMeta.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  
+  // Process each frame
+  for (let i = 0; i < frames.length; i++) {
+    const k = frames[i];
+    setStatus(`Rendering frame ${i + 1}/${frames.length}...`);
+    setBar((i + 1) / frames.length);
+    
+    // Get or compute RGB
+    const cacheKey = `${k}-${mode}`;
+    let rgb;
+    if (gLayerCache[cacheKey]) {
+      rgb = gLayerCache[cacheKey];
+    } else {
+      const result = await renderLayerJPEGStrict(gMeta, k, 640, { mode });
+      rgb = result.rgb;
+      gLayerCache[cacheKey] = rgb;
+    }
+    
+    // Apply color mode (same logic as updateSimpleDisplay)
+    const displayRGB = new Uint8ClampedArray(rgb);
+    if (colorMode === 'grayscale') {
+      for (let j = 0; j < displayRGB.length; j += 3) {
+        const gray = Math.round(0.299 * displayRGB[j] + 0.587 * displayRGB[j+1] + 0.114 * displayRGB[j+2]);
+        displayRGB[j] = displayRGB[j+1] = displayRGB[j+2] = gray;
+      }
+    } else if (colorMode === 'hotspot') {
+      // Thermal colormap
+      for (let j = 0; j < displayRGB.length; j += 3) {
+        const intensity = (0.299 * displayRGB[j] + 0.587 * displayRGB[j+1] + 0.114 * displayRGB[j+2]) / 255;
+        
+        let r, g, b;
+        if (intensity < 0.125) {
+          const t = intensity / 0.125;
+          r = 80 * t; g = 0; b = 80 * t;
+        } else if (intensity < 0.25) {
+          const t = (intensity - 0.125) / 0.125;
+          r = 80 * (1 - t); g = 0; b = 80 + 175 * t;
+        } else if (intensity < 0.375) {
+          const t = (intensity - 0.25) / 0.125;
+          r = 0; g = 255 * t; b = 255;
+        } else if (intensity < 0.5) {
+          const t = (intensity - 0.375) / 0.125;
+          r = 0; g = 255; b = 255 * (1 - t);
+        } else if (intensity < 0.625) {
+          const t = (intensity - 0.5) / 0.125;
+          r = 255 * t; g = 255; b = 0;
+        } else if (intensity < 0.75) {
+          const t = (intensity - 0.625) / 0.125;
+          r = 255; g = 255 * (1 - 0.5 * t); b = 0;
+        } else if (intensity < 0.875) {
+          const t = (intensity - 0.75) / 0.125;
+          r = 255; g = 128 * (1 - t); b = 0;
+        } else {
+          const t = (intensity - 0.875) / 0.125;
+          r = 255; g = 255 * t; b = 255 * t;
+        }
+        
+        displayRGB[j] = Math.round(r);
+        displayRGB[j+1] = Math.round(g);
+        displayRGB[j+2] = Math.round(b);
+      }
+    } else if (colorMode === 'inverted') {
+      // Inverted colors
+      for (let j = 0; j < displayRGB.length; j++) {
+        displayRGB[j] = 255 - displayRGB[j];
+      }
+    }
+    
+    // Convert RGB to RGBA for ImageData
+    const rgbaData = new Uint8ClampedArray(gMeta.width * gMeta.height * 4);
+    for (let i = 0, j = 0; i < displayRGB.length; i += 3, j += 4) {
+      rgbaData[j] = displayRGB[i];       // R
+      rgbaData[j + 1] = displayRGB[i + 1]; // G
+      rgbaData[j + 2] = displayRGB[i + 2]; // B
+      rgbaData[j + 3] = 255;               // A
+    }
+    
+    // Draw to canvas
+    const imageData = new ImageData(rgbaData, gMeta.width, gMeta.height);
+    ctx.putImageData(imageData, 0, 0);
+    
+    // Add frame to GIF
+    gif.addFrame(ctx, {copy: true, delay: speed});
+    
+    // Yield to prevent blocking
+    if (i % 4 === 0) await microYield();
+  }
+  
+  setStatus('Encoding GIF...');
+  
+  // Handle GIF generation
+  gif.on('finished', function(blob) {
+    setStatus('GIF ready! Downloading...');
+    
+    // Create download link
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `jpeg-layers-${direction}-${mode}-${colorMode}.gif`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    setBar(0);
+    setStatus('Export complete! Check your downloads folder.');
+  });
+  
+  gif.on('progress', function(p) {
+    setStatus(`Encoding GIF... ${Math.round(p * 100)}%`);
+    setBar(p);
+  });
+  
+  // Start rendering
+  gif.render();
+}
+
+// Wire up simple UI controls - moved to end of script after all functions are defined
+
+// <!-- TODO: Progressive JPEG Support
+//      Option 1: Full progressive decoding
+//        - Parse spectral selection and successive approximation
+//        - Handle multiple scans and bit-plane refinement
+//        - Complex but gives exact progressive simulation
+//      
+//      Option 2: Canvas-based approximation
+//        - Decode with Image API, extract pixels
+//        - Run forward DCT to approximate coefficients
+//        - Simpler but less accurate
+//      
+//      Option 3: Server-side conversion
+//        - Convert progressive to baseline before analysis
+//        - Most accurate but requires backend
+// -->
+
+// Wire up simplified UI controls
+document.getElementById('simpleFile').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) handleSimpleFile(file);
+});
+
+// Make drop zone clickable
+document.getElementById('simpleDrop').addEventListener('click', e => {
+  if (e.target.tagName !== 'INPUT') {
+    document.getElementById('simpleFile').click();
+  }
+});
+
+// Add keyboard support for Enter/Space
+document.getElementById('simpleDrop').addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.tagName !== 'INPUT') {
+    e.preventDefault();
+    document.getElementById('simpleFile').click();
+  }
+});
+
+document.getElementById('simpleDrop').addEventListener('dragover', e => {
+  e.preventDefault();
+  e.currentTarget.classList.add('hover');
+});
+
+document.getElementById('simpleDrop').addEventListener('dragleave', e => {
+  e.currentTarget.classList.remove('hover');
+});
+
+document.getElementById('simpleDrop').addEventListener('drop', e => {
+  e.preventDefault();
+  e.currentTarget.classList.remove('hover');
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    handleSimpleFile(file);
+  }
+});
+
+document.getElementById('simpleK').addEventListener('input', e => {
+  document.getElementById('simpleKSlider').value = e.target.value;
+  updateSimpleDisplay();
+});
+
+document.getElementById('simpleKSlider').addEventListener('input', e => {
+  document.getElementById('simpleK').value = e.target.value;
+  updateSimpleDisplay();
+});
+
+document.getElementById('simpleMode').addEventListener('change', updateSimpleDisplay);
+document.getElementById('simpleColor').addEventListener('change', updateSimpleDisplay);
+
+document.getElementById('flipbookBtn').addEventListener('click', () => {
+  if (isAnimating) {
+    stopFlipbook();
+  } else {
+    startFlipbook();
+  }
+});
+
+document.getElementById('exportGifBtn').addEventListener('click', () => {
+  exportAnimation();
+});
+
+document.getElementById('flipSpeed').addEventListener('input', e => {
+  document.getElementById('flipSpeedLabel').textContent = e.target.value + 'ms';
+  if (isAnimating) {
+    stopFlipbook();
+    startFlipbook();
+  }
+});
+
+setStatus('idle');
+
+// Auto-load the built-in sample if present
+(async function autoLoadSample(){
+  try {
+    const resp = await fetch('mandril_color.jpg', { cache: 'no-cache' });
+    if (!resp.ok) return; // sample not present
+    const blob = await resp.blob();
+    const file = new File([blob], 'mandril_color.jpg', { type: 'image/jpeg' });
+    // Default to Compare mode for first view
+    setMode('compare');
+    await handleFile(file);
+  } catch (_) {
+    // ignore if fetch blocked (e.g., file://)
+  }
+})();
+
+</script>
+</body>
+</html>
